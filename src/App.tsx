@@ -112,7 +112,7 @@ function App() {
         <JoystickUI {...kinematicsInfo} />
         <JoystickUI {...kinematicsInfo} angular={true} />
         <h2>Dynamics</h2>
-        <AccelerationControlUI {...kinematicsInfo} />
+        {/* <AccelerationControlUI {...kinematicsInfo} /> */}
         {/*
           #0: Enter parameters (gravity, friction, etc.)
           #1: Enter joint accelerations and get necessarry torques
