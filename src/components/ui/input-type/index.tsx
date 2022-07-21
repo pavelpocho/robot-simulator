@@ -16,7 +16,7 @@ interface Props {
 
 export const InputTypeUI: React.FC<Props> = ({}) => {
   const c = useContext(Context);
-  const inputTypes = [ InputType.FwdKin, InputType.InvKin, InputType.JointVel, InputType.CartVel, InputType.Accel, InputType.Torque ];
+  const inputTypes = [ InputType.FwdKin, InputType.InvKin, InputType.JointVel, InputType.CartVel ];
   return <div>
     { inputTypes.map((t, i) => {
       return <button key={i} onClick={() => {c?.setInputType(t)}}> 

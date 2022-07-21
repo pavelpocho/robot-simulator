@@ -16,8 +16,6 @@ import { Context } from './utils/inputTypeContext'
 import React from 'react'
 import { InputType, InputTypeUI } from './components/ui/input-type'
 import { AccelerationControlUI } from './components/ui/acceleration-control'
-import { manualRRFwdDynamics, manualRRInvDynamics, symbolicRRFwdDynamics } from './utils/samples'
-import { basicIntegrationTest } from './utils/integrations'
 
 interface MouseCoords {
   x: number,
@@ -107,100 +105,13 @@ function App() {
         width: '500px',
         zIndex: 3
       }}>
-        <h2>Kinematics</h2>
         <InputTypeUI />
+        <h2>Kinematics</h2>
         <PositionControlUI {...kinematicsInfo} />
         <VelocityControlUI {...kinematicsInfo} />
         <JoystickUI {...kinematicsInfo} />
         <JoystickUI {...kinematicsInfo} angular={true} />
         <h2>Dynamics</h2>
-        <button onClick={() => { 
-          const torques = manualRRFwdDynamics(
-            [30 / 180 * Math.PI, 30 / 180 * Math.PI],
-            [0, 1, 1],
-            [0, 1, 1],
-            [0, 1, 0.5],
-            [0, 1, 1],
-            [0, 1, 1],
-            [0, 0, 0],
-            9.81
-          );
-          if (torques) {
-            console.log("Manual results:");
-            console.log(torques.toArray()[0]);
-            console.log(torques.toArray()[1]);
-            // console.log(torques.toArray()[2]);
-          }
-          const refTorques = symbolicRRFwdDynamics(
-            [30 / 180 * Math.PI, 30 / 180 * Math.PI],
-            [0, 1, 1],
-            [0, 1, 1],
-            [0, 1, 0.5],
-            [0, 1, 1],
-            [0, 1, 1],
-            [0, 0, 0],
-            9.81
-          );
-          if (refTorques) {
-            console.log("Sym results:");
-            console.log(refTorques.toArray()[0]);
-            console.log(refTorques.toArray()[1]);
-            // console.log(refTorques.toArray()[2]);
-          }
-        }} >Test</button>
-        <button onClick={() => { 
-          const accelerations = manualRRInvDynamics(
-            [30 / 180 * Math.PI, 30 / 180 * Math.PI],
-            [0, 1, 1],
-            [0, 0, 0],
-            [0, 1, 0.5],
-            [0, 1, 1],
-            [0, 1, 1],
-            [0, 0, 0],
-            9.81
-          );
-          if (accelerations) {
-            console.log("Manual sort INV:");
-            console.log(accelerations.toArray()[0]);
-            console.log(accelerations.toArray()[1]);
-            console.log(accelerations.toArray()[2]);
-          }
-          // const refAccelerations = robot?.getGeneralAccelerations(
-          //   [30 / 180 * Math.PI, 30 / 180 * Math.PI, 30 / 180 * Math.PI],
-          //   [0, 0, 0, 0],
-          //   [0, 0, 0],
-          //   [0, 100, 100, 50],
-          //   [0, 1, 1, 1],
-          //   [0, 1, 1, 1],
-          //   [0, 0, 0],
-          //   9.81
-          // );
-          // if (refAccelerations) {
-          //   console.log("Auto sort INV:");
-          //   console.log(refAccelerations.toArray()[0]);
-          //   console.log(refAccelerations.toArray()[1]);
-          //   console.log(refAccelerations.toArray()[2]);
-          // }
-          // const v2Accelerations = robot?.getAccelerationsV2(
-          //   [30 / 180 * Math.PI, 30 / 180 * Math.PI, 30 / 180 * Math.PI],
-          //   [0, 0, 0, 0],
-          //   [0, 0, 0],
-          //   [0, 100, 100, 50],
-          //   [0, 1, 1, 1],
-          //   [0, 1, 1, 1],
-          //   [0, 0, 0],
-          //   9.81
-          // );
-          // if (v2Accelerations) {
-          //   console.log("Manual V2 sort INV:");
-          //   console.log(v2Accelerations.toArray()[0]);
-          //   console.log(v2Accelerations.toArray()[1]);
-          //   console.log(v2Accelerations.toArray()[2]);
-          // }
-        }} >Test Inverse</button>
-        <button onClick={() => {
-          basicIntegrationTest();
-        }}>Integration test</button>
         <AccelerationControlUI {...kinematicsInfo} />
         {/*
           #0: Enter parameters (gravity, friction, etc.)
