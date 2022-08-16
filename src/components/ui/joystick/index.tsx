@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
+import { useInputTypeContext } from "../../../utils/inputTypeContext";
 import { Input } from "../input";
+import { InputType } from "../input-type";
 
 type n = React.Dispatch<React.SetStateAction<number>>;
 type b = React.Dispatch<React.SetStateAction<boolean>>;
@@ -26,6 +28,7 @@ export const JoystickUI: React.FC<Props> = ({
   const joystick = useRef<HTMLDivElement>(null);
   const [tracking, setTracking] = useState(false);
   const [mouseCoords, setMouseCoords] = useState<MouseCoords | null>(null);
+  const c = useInputTypeContext();
 
   useEffect(() => {
     if (angular) {
@@ -38,12 +41,13 @@ export const JoystickUI: React.FC<Props> = ({
     setApplyCartesianVelocities(true);
   }, [mouseCoords]);
 
-  return <div style={{
+  return c.inputType >= 3 ? <div style={{
     borderRadius: '100%',
     backgroundColor: 'gray',
     height: '100px',
     width: '100px',
-    position: 'relative'
+    position: 'relative',
+    display: c.inputType == InputType.CartVel ? 'block' : 'none'
   }}>
     <div ref={joystick} style={{
       borderRadius: '100%',
@@ -70,5 +74,5 @@ export const JoystickUI: React.FC<Props> = ({
     tabIndex={0}
     >
     </div>
-  </div>
+  </div> : <></>
 }

@@ -1,10 +1,11 @@
-import { cos, sin, matrix, multiply, pow, atan2, Matrix, transpose, add, cross, sum, inv, sign } from "mathjs";
+import math, { cos, sin, matrix, multiply, pow, atan2, Matrix, transpose, add, cross, sum, inv, sign, evaluate, compile } from "mathjs";
 import vector from "../utils/vector";
 import nerdamer from 'nerdamer';
+import { DHTableRow } from "../utils/useKinematicInfo";
 
 interface TwoDRobotInitData {
-  robotType: RobotType,
-  jointValues: number[],
+  robotType: string,
+  jointPositions: number[],
   linkLengths: number[],
 }
 
@@ -39,6 +40,7 @@ export const P_2D_Robot_Type: RobotType = {
 }
 
 interface LinkParametersInitData {
+  i: number
   a_i_minus_1: number,
   alpha_i_minus_1: number,
   d_i: number,
@@ -47,12 +49,14 @@ interface LinkParametersInitData {
 
 class LinkParameters {
 
+  i: number
   a_i_minus_1: number;
   alpha_i_minus_1: number;
   d_i: number;
   theta_i: number;
 
-  constructor({ a_i_minus_1, alpha_i_minus_1, d_i, theta_i }: LinkParametersInitData) {
+  constructor({ i, a_i_minus_1, alpha_i_minus_1, d_i, theta_i }: LinkParametersInitData) {
+    this.i = i;
     this.a_i_minus_1 = a_i_minus_1;
     this.alpha_i_minus_1 = alpha_i_minus_1;
     this.d_i = d_i;
@@ -80,6 +84,20 @@ class LinkParameters {
     ])
   }
 
+  getMathJaxTMSubstituted() {
+    const j = this.i + 1;
+    const theta_i = this.theta_i.toFixed(2);
+    const alpha_i_min_1 = this.alpha_i_minus_1.toFixed(2);
+    const d_i = this.d_i.toFixed(2);
+    const a_i_min_1 = this.a_i_minus_1.toFixed(2);
+    return String.raw`{_${j}^{${j-1}}}T=\left[ \begin{array}{ccc}c(${theta_i}) & -s(${theta_i}) & 0 & ${a_i_min_1} \\ s(${theta_i})c(${alpha_i_min_1}) & c(${theta_i})c(${alpha_i_min_1}) & -s(${alpha_i_min_1}) & -s(${alpha_i_min_1})${d_i} \\ s(${theta_i})s(${alpha_i_min_1}) & c(${theta_i})s(${alpha_i_min_1}) & c(${alpha_i_min_1}) & c(${alpha_i_min_1})${d_i} \\ 0 & 0 & 0 & 1\end{array} \right]`
+  }
+
+  getMathJaxTMSolved() {
+    const j = this.i + 1;
+    return String.raw`{_${j}^{${j-1}}}T=\left[ \begin{array}{ccc}${cos(this.theta_i).toFixed(2)} & ${-sin(this.theta_i).toFixed(2)} & 0 & ${this.a_i_minus_1} \\ ${(sin(this.theta_i)*cos(this.alpha_i_minus_1)).toFixed(2)} & ${(cos(this.theta_i)*cos(this.alpha_i_minus_1)).toFixed(2)} & ${(-sin(this.alpha_i_minus_1)).toFixed(2)} & ${(-sin(this.alpha_i_minus_1)*this.d_i).toFixed(2)} \\ ${(sin(this.theta_i)*sin(this.alpha_i_minus_1)).toFixed(2)} & ${(cos(this.theta_i)*sin(this.alpha_i_minus_1)).toFixed(2)} & ${(cos(this.alpha_i_minus_1)).toFixed(2)} & ${(cos(this.alpha_i_minus_1)*this.d_i).toFixed(2)} \\ 0 & 0 & 0 & 1\end{array} \right]`;
+  }
+
   getRotationMatrix() {
     let t = this.theta_i;
     let al = this.alpha_i_minus_1;
@@ -96,17 +114,24 @@ class LinkParameters {
 export default class TwoDRobot {
 
   numOfJoints: number;
-  jointTypes: ('P'|'R')[];
   robotTypeName: string;
   linkParametersArray: LinkParameters[];
   jointValues: number[];
   linkLengths: number[];
 
-  constructor({ robotType, jointValues, linkLengths }: TwoDRobotInitData) {
-    this.jointTypes = robotType.jointTypes;
-    this.robotTypeName = robotType.name;
+  last_u1: number = 0;
+  last_u2: number = 0;
+  last_u3: number = 0;
+  last_u4: number = 0;
+  last_u5: number = 0;
+  last_u6: number = 0;
+  logged: boolean = false;
+  integral: number[] = [0, 0, 0];
+
+  constructor({ robotType, jointPositions: jointValues, linkLengths }: TwoDRobotInitData) {
+    this.robotTypeName = robotType;
     this.linkLengths = linkLengths;
-    this.numOfJoints = robotType.jointTypes.length;
+    this.numOfJoints = robotType.length;
     this.linkParametersArray = [];
     this.jointValues = [];
     this.setJointValues(jointValues);
@@ -147,23 +172,48 @@ export default class TwoDRobot {
     return inv(jacobian);
   }
 
+  setDhParameters(dhTable: DHTableRow[], jointPositions: number[], robotType: string) {
+    const linkParametersArray: LinkParameters[] = [];
+    dhTable.forEach((dhRow, i) => {
+      linkParametersArray.push(new LinkParameters({
+        i, a_i_minus_1: dhRow.a_imin1, alpha_i_minus_1: dhRow.alpha_imin1 / 180 * Math.PI, d_i: robotType[i] === 'P' ? jointPositions[i] : dhRow.d_i, theta_i: robotType[i] === 'R' ? jointPositions[i] / 180 * Math.PI : dhRow.theta_i / 180 * Math.PI
+      }));
+    });
+    this.linkParametersArray = linkParametersArray;
+  }
+
   setJointValues(jointValues: number[]) {
     this.jointValues = jointValues;
     const linkParametersArray: LinkParameters[] = [];
     for (let i = 0; i < jointValues.length; i++) {
-      if (this.jointTypes[i] === 'R') {
-        linkParametersArray.push(new LinkParameters({
-          a_i_minus_1: this.linkLengths[i], alpha_i_minus_1: 0, d_i: 0, theta_i: jointValues[i]
-        }));
+      // Nope, this is complicated af
+      if (this.robotTypeName[i] === 'R') {
+        if (this.robotTypeName[i - 1] === 'R') {
+          linkParametersArray.push(new LinkParameters({
+            i, a_i_minus_1: this.linkLengths[i], alpha_i_minus_1: 0, d_i: 0, theta_i: jointValues[i]
+          }));
+        }
+        else {
+          linkParametersArray.push(new LinkParameters({
+            i, a_i_minus_1: 0, alpha_i_minus_1: - Math.PI / 2, d_i: 0, theta_i: jointValues[i]
+          }));
+        }
       }
-      else if (this.jointTypes[i] === 'P') {
-        linkParametersArray.push(new LinkParameters({
-          a_i_minus_1: this.linkLengths[i] + jointValues[i], alpha_i_minus_1: 0, d_i: 0, theta_i: 0
-        }));
+      else if (this.robotTypeName[i] === 'P') {
+        if (this.robotTypeName[i - 1] === 'R') {
+          linkParametersArray.push(new LinkParameters({
+            i, a_i_minus_1: 0, alpha_i_minus_1: Math.PI / 2, d_i: jointValues[i], theta_i: 0
+          }));
+        }
+        else {
+          linkParametersArray.push(new LinkParameters({
+            i, a_i_minus_1: this.linkLengths[i], alpha_i_minus_1: 0, d_i: jointValues[i], theta_i: 0
+          }));
+        }
       }
     }
     linkParametersArray.push(new LinkParameters({
-      a_i_minus_1: this.linkLengths[jointValues.length - 1 + 1], alpha_i_minus_1: 0, d_i: 0, theta_i: 0
+      i: jointValues.length, a_i_minus_1: this.linkLengths[jointValues.length - 1 + 1], alpha_i_minus_1: 0, d_i: 0, theta_i: 0
     }))
     this.linkParametersArray = linkParametersArray;
     // this.linkParametersArray = [...Array(this.numOfJoints).keys()].map(i => new LinkParameters({
@@ -186,7 +236,6 @@ export default class TwoDRobot {
       [0, 0, 0, 1],
     ]));
     return totalTransform;
-
   }
 
   inverseKinematicsRRR(x: number, y: number, a: number) {
@@ -229,457 +278,11 @@ export default class TwoDRobot {
     return transformMatrices[0];
   }
 
-  getGeneralJacobian(joint_angles: number[], L: number[]) {
-    nerdamer.setVar('R01', 'matrix([cos(theta_0), -sin(theta_0), 0], [sin(theta_0), cos(theta_0), 0], [0, 0, 1])');
-    nerdamer.setVar('R12', 'matrix([cos(theta_1), -sin(theta_1), 0], [sin(theta_1), cos(theta_1), 0], [0, 0, 1])');
-    nerdamer.setVar('R23', 'matrix([cos(theta_2), -sin(theta_2), 0], [sin(theta_2), cos(theta_2), 0], [0, 0, 1])');
-    nerdamer.setVar('R34', 'matrix([1, 0, 0], [0, 1, 0], [0, 0, 1])');
-
-    nerdamer.setVar('R10', 'transpose(R01)');
-    nerdamer.setVar('R21', 'transpose(R12)');
-    nerdamer.setVar('R32', 'transpose(R23)');
-    nerdamer.setVar('R43', 'transpose(R34)');
-
-    nerdamer.setVar('omega_0', 'matrix([0], [0], [0])');
-    nerdamer.setVar('v_0', 'matrix([0], [0], [0])');
-    nerdamer.setConstant('L0', 0);
-
-    for (var i = 1; i <= 4; i++) {
-      if (i == 4) {
-        nerdamer.setVar(`omega_${i}`, `(R${i}${i-1}*omega_${i-1})+(matrix([0],[0],[0]))`);
-        const vectorizedOmega = nerdamer(`[matget(omega_${i-1}, 0, 0), matget(omega_${i-1}, 1, 0), matget(omega_${i-1}, 2, 0)]`).text();
-        nerdamer.setVar(`v_${i}`, `(R${i}${i-1})*(v_${i-1}+(cross(${vectorizedOmega}, [L${i-1}, 0, 0])))`);
-      }
-      else {
-        nerdamer.setVar(`omega_${i}`, `(R${i}${i-1}*omega_${i-1})+(matrix([0],[0],[theta_dot_${i}]))`);
-        const vectorizedOmega = nerdamer(`[matget(omega_${i-1}, 0, 0), matget(omega_${i-1}, 1, 0), matget(omega_${i-1}, 2, 0)]`).text();
-        nerdamer.setVar(`v_${i}`, `(R${i}${i-1})*(v_${i-1}+(cross(${vectorizedOmega}, [L${i-1}, 0, 0])))`);
-      }
-    }
-
-    const v_4 = nerdamer.getVars('text')['v_4'];
-    const omega_4 = nerdamer.getVars('text')['omega_4'];
-    const ja = [['0', '0', '0'], ['0', '0', '0'], ['0', '0', '0']];
-    for (var i = 1; i < 4; i++) {
-      for (var j = 0; j < 3; j++) {
-        const x = nerdamer(`expand(matget(${j === 2 ? omega_4 : v_4}, ${j}, 0))`)
-          .text()
-          .split('+')
-          .filter(x => x.includes(`theta_dot_${i}`))
-          .map(x => x.replace(`theta_dot_${i}`, '1'))
-          .join('+');
-        if (x != '') ja[i-1][j] = x;
-      }
-    }
-    const jacobian = nerdamer(`matrix([(${ja[0][0]}), (${ja[0][1]}), (${ja[0][2]})], [(${ja[1][0]}), (${ja[1][1]}), (${ja[1][2]})], [(${ja[2][0]}), (${ja[2][1]}), (${ja[2][2]})])`);
-    const solvedJacobian = nerdamer(jacobian, { theta_0: joint_angles[0].toString(), theta_1: joint_angles[1].toString(), theta_2: joint_angles[2].toString(), L0: L[0].toString(), L1: L[1].toString(), L2: L[2].toString(), L3: L[3].toString() });
-    const solvedDownToZero = nerdamer(`matrix([cos(theta_0 + theta_1 + theta_2), -sin(theta_0 + theta_1 + theta_2), 0], [sin(theta_0 + theta_1 + theta_2), cos(theta_0 + theta_1 + theta_2), 0], [0, 0, 1])`, { theta_0: joint_angles[0].toString(), theta_1: joint_angles[1].toString(), theta_2: joint_angles[2].toString() });
-    const genJacobian =  nerdamer(`${solvedJacobian.text('decimals')}*${solvedDownToZero.text('decimals')}`);
-    return matrix([
-      [
-        parseInt(nerdamer(`matget(${genJacobian}, 0, 0)`).evaluate().text('decimals')),
-        parseInt(nerdamer(`matget(${genJacobian}, 1, 0)`).evaluate().text('decimals')),
-        parseInt(nerdamer(`matget(${genJacobian}, 2, 0)`).evaluate().text('decimals')),
-      ],
-      [
-        parseInt(nerdamer(`matget(${genJacobian}, 0, 1)`).evaluate().text('decimals')),
-        parseInt(nerdamer(`matget(${genJacobian}, 1, 1)`).evaluate().text('decimals')),
-        parseInt(nerdamer(`matget(${genJacobian}, 2, 1)`).evaluate().text('decimals')),
-      ],
-      [
-        parseInt(nerdamer(`matget(${genJacobian}, 0, 2)`).evaluate().text('decimals')),
-        parseInt(nerdamer(`matget(${genJacobian}, 1, 2)`).evaluate().text('decimals')),
-        parseInt(nerdamer(`matget(${genJacobian}, 2, 2)`).evaluate().text('decimals')),
-      ],
-    ]);
-  }
-
-  getInverseGeneralJacobian(joint_angles: number[], L: number[]) {
-    const jacobian = this.getGeneralJacobian(joint_angles, L);
-    return inv(jacobian);
-  }
-
-  getTorquesV2(t: number[], td: number[], tdd: number[], L: number[], m: number[], w: number[], FN: number[], g: number) {
-    // Ranges:
-    // Paper: t1 - t3, Vars: t[0] - t[2] (mitigated using shift)
-    // Paper: td1 - td3, Vars: td[1] - td[3]
-    // Paper: tdd1 - tdd3, Vars: tdd[1] - tdd[3]
-    // Paper: L1 - L3, Vars: L[1] - L[3] (and m, w)
-
-    const shiftedT = [0, t[0], t[1], t[2]];
-    const s = shiftedT.map(x => sin(x));
-    const c = shiftedT.map(x => cos(x));
-    const c12 = cos(shiftedT[1] + shiftedT[2]);
-    const s12 = sin(shiftedT[1] + shiftedT[2]);
-    const c23 = cos(shiftedT[2] + shiftedT[3]);
-    const s23 = sin(shiftedT[2] + shiftedT[3]);
-    const c123 = cos(shiftedT[1] + shiftedT[2] + shiftedT[3]);
-    const s123 = sin(shiftedT[1] + shiftedT[2] + shiftedT[3]);
-    const MM3_I = m[3]/12*((L[3]**2)+(w[3]**2));
-    const MM2_I = m[2]/12*((L[2]**2)+(w[2]**2));
+  getCompiledJacobian(robotType: string, joint_angles: number[]) {
     
-    const G_3 = 1/2*L[3]*m[3]*c123*g;
-    const V_3 = FN[2]+L[3]*FN[1]+1/2*L[3]*m[3]*(L[1]*s23*(td[1]**2)+L[2]*s[3]*((td[1]+td[2])**2));
-    const MM_31 = MM3_I+1/2*L[3]*m[3]*(L[1]*c23+L[2]*c[3]+1/2*L[3]);
-    const MM_32 = MM3_I+1/2*L[3]*m[3]*(L[2]*c[3]+1/2*L[3]);
-    const MM_33 = MM3_I+1/4*(L[3]**2)*m[3];
-
-    const G_2 = L[2]*g*c12*(1/2*m[2]+m[3])+G_3;
-    const V_2 = (
-      1/2*L[2]*m[2]*L[1]*s[2]*(td[1]**2)+L[2]*(s[3]*FN[0]+c[3]*FN[1])+
-      L[2]*m[3]*(s[3]*(-c23*L[1]*(td[1]**2)-c[3]*L[2]*((td[1]+td[2])**2)-1/2*L[3]*((td[1]+td[2]+td[3])**2))+c[3]*(s23*L[1]*(td[1]**2)+s[3]*L[2]*((td[1]+td[2])**2)))+V_3
-    );
-    const MM_21 = (
-      MM2_I+1/2*L[2]*m[2]*(L[1]*c[2]+1/2*L[2])+
-      L[2]*m[3]*(s[3]*(s23*L[1]+s[3]*L[2])+c[3]*(c23*L[1]+c[3]*L[2]+1/2*L[3]))+MM_31
-    );
-    const MM_22 = MM2_I+1/4*(L[2]**2)*m[2]*L[2]*m[3]*(L[2]+c[3]*1/2*L[3])+MM_32;
-    const MM_23 = L[2]*m[3]*c[3]*1/2*L[3]+MM_33;
-
-    const G_1 = L[1]*c[1]*g*(1/2*m[1]+m[2]+m[3])+G_2;
-    const V_1 = (
-      L[1]*(s23*FN[0]+c23*FN[1])+
-      L[1]*m[3]*(s23*(-c23*L[1]*(td[1]**2)-L[2]*c[3]*((td[1]+td[2])**2)-1/2*L[3]*((td[1]+td[2]+td[3])**2))+c23*(s23*L[1]*(td[1]**2)+s[3]*L[2]*((td[1]+td[2])**2)))+
-      L[1]*m[2]*(s[2]*(-c[2]*(td[1]**2)*L[1]-1/2*L[2]*((td[1]+td[2])**2))+c[2]*(s[2]*(td[1]**2)*L[1]))+V_2
-    )
-    const MM_11 = (
-      m[1]/12*((L[1]**2)+(w[1]**2))+1/4*(L[1]**2)*m[1]+L[1]*m[3]*(s23*(s23*L[1]+s[3]*L[2])+c23*(c23*L[1]+c[3]*L[2]+1/2*L[3]))+
-      L[1]*m[2]*(s[2]*(s[2]*L[1])+c[2]*(c[2]*L[1]+1/2*L[2]))+MM_21
-    )
-    const MM_12 = (
-      L[1]*m[3]*(s23*(L[2]*s[3])+c23*(L[2]*c[3]+1/2*L[3]))+
-      L[1]*m[2]*(c[2]*1/2*L[2])+MM_22
-    )
-    const MM_13 = (
-      L[1]*m[3]*c12*1/2*L[3]+MM_23
-    )
-
-    const MM = matrix([
-      [MM_11, MM_12, MM_13],
-      [MM_21, MM_22, MM_23],
-      [MM_31, MM_32, MM_33]
-    ]);
-    const V = vector([V_1, V_2, V_3]);
-    const G = vector([G_1, G_2, G_3]);
-    const TDD = vector([tdd[1], tdd[2], tdd[3]]);
-
-    return add(add(multiply(MM, TDD), V), G);
-
   }
 
-  getTorques(t: number[], tdZeroIsIgnored: number[], tddZeroIsIgnored: number[], L: number[], m: number[], w: number[], FN: number[], g: number) {
-    // td[0] and tdd[0] MUST ALSO BE MADE USELESS SO THAT THE DATA IS IN 1 - 3
-
-    // FN is [f_eex, f_eey, n_eez] forces and torques acting on end effector
-    // g - gravity in "y" world direction
-
-    // L[0] is essentially useless, so m[0] is also useless as well as w[0] (width of link)
-    // Therefore, the indexes of L and m and w are correct!
-    // s and c indexes are 0 - 2 on paper, so they are also correct!
-    // td[0] and tdd[0] MUST ALSO BE MADE USELESS SO THAT THE DATA IS IN 1 - 3
-
-    const td = tdZeroIsIgnored;
-    const tdd = tddZeroIsIgnored;
-    
-    const s = t.map(x => sin(x));
-    const c = t.map(x => cos(x));
-    c[12] = cos(t[1] + t[2]);
-    s[12] = sin(t[1] + t[2]);
-    const c_01 = cos(t[0] + t[1]);
-    const c_012 = cos(t[0] + t[1] + t[2]);
-
-    const mm_11 = (
-      1/12*(m[1]*(w[1]**2)+m[2]*(w[2]**2)+m[3]*(w[3]**2))+1/48*(L[1]**2)*m[1]+13/48*((L[2]**2)*m[2]+(L[3]**2)*m[3])+
-      L[1]*L[2]*c[1]*(2*m[3]+m[2])+(L[1]**2)*m[3]+L[1]*L[3]*m[3]+(L[1]**2)*m[2]+(L[2]**2)*m[3]+L[2]*L[3]*c[2]*m[3]
-    );
-    const mm_12 = (
-      1/12*(m[2]*(w[2]**2)+m[3]*(w[3]**2))+1/2*L[1]*L[3]*m[3]*c[12]+1/48*(L[2]**2)*m[2]+
-      13/48*(L[3]**2)*m[3]+L[1]*L[2]*c[1]*m[3]+(L[2]**2)*m[3]+L[2]*L[3]*c[2]*m[3]
-    );
-    const mm_13 = (
-      1/12*m[3]*(w[3]**2)+1/48*(L[3]**2)*m[3]
-    );
-    const V_1 = (
-      -L[1]*L[3]*m[3]*s[12]*(1/2*(td[2]**2)+1/2*(td[3]**2)+(td[1]*td[2])+(td[1]*td[3]))-L[2]*L[3]*m[3]*s[2]*(td[1]*td[3]+td[2]*td[3]+1/2*(td[3]**2))
-      -L[1]*L[2]*m[2]*s[1]*((td[2]**2)+td[1]*td[2])-L[1]*L[2]*m[3]*s[1]*(2*td[1]*td[2]+(td[2]**2))-L[1]*L[2]*m[3]*s[12]*td[2]*td[3]+
-      FN[0]*(L[1]*s[12]+L[2]*s[2])+FN[1]*(L[3]+L[2]*c[2]+L[1]*c[12])+FN[2]
-    );
-    const G_1 = L[1]*c[0]*g*(1/2*m[1]+m[2]+m[3])+L[2]*c_01*g*(1/2*m[2]+m[3])+1/2*L[3]*c_012*g*m[3];
-
-    const mm_21 = (
-      1/2*c[12]*L[1]*L[3]*m[3]+1/12*(m[2]*(w[2]**2)+m[3]*(w[3]**2))+13/48*((L[2]**2)*m[2]+(L[3]**2)*m[3])+L[1]*L[2]*c[1]*m[3]+
-      L[2]*L[3]*c[2]*m[3]+(L[2]**2)*m[3]+1/2*L[1]*L[2]*m[2]*c[1]
-    )
-    const mm_22 = (
-      1/12*(m[2]*(w[2]**2)+m[3]*(w[3]**2))+1/48*(L[2]**2)*m[2]+13/48*(L[3]**2)*m[3]+L[2]*L[3]*c[2]*m[3]+(L[2]**2)*m[3]
-    )
-    const mm_23 = (
-      1/12*m[3]*(w[3]**2)+1/48*(L[3]**2)*m[3]
-    )
-    const V_2 = (
-      -L[2]*L[3]*m[3]*s[2]*(1/2*(td[3]**2)+td[1]*td[3]+td[2]*td[3])+L[1]*L[2]*m[3]*s[1]*(td[1]**2)+
-      1/2*L[1]*L[3]*s[12]*m[3]*(td[1]**2)+FN[1]*(L[2]*c[2]+L[3])+FN[0]*(L[2]*s[2])+FN[2]
-    )
-    const G_2 = (
-      L[2]*c_01*g*(1/2*m[2]+m[3])+L[3]*c_012*g*(1/2*m[3])
-    )
-
-    const mm_31 = (
-      1/12*m[3]*(w[3]**2)+1/2*L[1]*L[3]*m[3]*c[12]+13/48*(L[3]**2)*m[3]+1/2*L[2]*L[3]*c[2]*m[3]
-    )
-    const mm_32 = (
-      1/12*m[3]*(w[3]**2)+13/48*(L[3]**2)*m[3]+1/2*L[2]*L[3]*c[2]*m[3]
-    )
-    const mm_33 = (
-      1/12*m[3]*(w[3]**2)+1/48*(L[3]**2)*m[3]
-    )
-    const V_3 = (
-      FN[1]*L[3]+FN[2]+1/2*L[1]*L[3]*m[3]*s[12]*(td[1]**2)+L[2]*L[3]*m[3]*s[2]*(1/2*((td[1]**2)+(td[2]**2)+td[1]*td[2]))
-    )
-    const G_3 = (
-      1/2*L[3]*m[3]*g*c_012
-    )
-
-    const MM = matrix([
-      [mm_11, mm_12, mm_13],
-      [mm_21, mm_22, mm_23],
-      [mm_31, mm_32, mm_33]
-    ]);
-    const V = vector([V_1, V_2, V_3]);
-    const G = vector([G_1, G_2, G_3]);
-    const TDD = vector([tdd[1], tdd[2], tdd[3]]);
-
-    return add(add(multiply(MM, TDD), V), G);
-  }
-
-  getAccelerationsV2(t: number[], td: number[], torques: number[], L: number[], m: number[], w: number[], FN: number[], g: number) {
-    // Ranges:
-    // Paper: t1 - t3, Vars: t[0] - t[2] (mitigated using shift)
-    // Paper: td1 - td3, Vars: td[1] - td[3]
-    // Paper: tdd1 - tdd3, Vars: tdd[1] - tdd[3]
-    // Paper: L1 - L3, Vars: L[1] - L[3] (and m, w)
-
-    const shiftedT = [0, t[0], t[1], t[2]];
-    const s = shiftedT.map(x => sin(x));
-    const c = shiftedT.map(x => cos(x));
-    const c12 = cos(shiftedT[1] + shiftedT[2]);
-    const s12 = sin(shiftedT[1] + shiftedT[2]);
-    const c23 = cos(shiftedT[2] + shiftedT[3]);
-    const s23 = sin(shiftedT[2] + shiftedT[3]);
-    const c123 = cos(shiftedT[1] + shiftedT[2] + shiftedT[3]);
-    const s123 = sin(shiftedT[1] + shiftedT[2] + shiftedT[3]);
-    const MM3_I = m[3]/12*((L[3]**2)+(w[3]**2));
-    const MM2_I = m[2]/12*((L[2]**2)+(w[2]**2));
-    
-    const G_3 = 1/2*L[3]*m[3]*c123*g;
-    const V_3 = FN[2]+L[3]*FN[1]+1/2*L[3]*m[3]*(L[1]*s23*(td[1]**2)+L[2]*s[3]*((td[1]+td[2])**2));
-    const MM_31 = MM3_I+1/2*L[3]*m[3]*(L[1]*c23+L[2]*c[3]+1/2*L[3]);
-    const MM_32 = MM3_I+1/2*L[3]*m[3]*(L[2]*c[3]+1/2*L[3]);
-    const MM_33 = MM3_I+1/4*(L[3]**2)*m[3];
-
-    const G_2 = L[2]*g*c12*(1/2*m[2]+m[3])+G_3;
-    const V_2 = (
-      1/2*L[2]*m[2]*L[1]*s[2]*(td[1]**2)+L[2]*(s[3]*FN[0]+c[3]*FN[1])+
-      L[2]*m[3]*(s[3]*(-c23*L[1]*(td[1]**2)-c[3]*L[2]*((td[1]+td[2])**2)-1/2*L[3]*((td[1]+td[2]+td[3])**2))+c[3]*(s23*L[1]*(td[1]**2)+s[3]*L[2]*((td[1]+td[2])**2)))+V_3
-    );
-    const MM_21 = (
-      MM2_I+1/2*L[2]*m[2]*(L[1]*c[2]+1/2*L[2])+
-      L[2]*m[3]*(s[3]*(s23*L[1]+s[3]*L[2])+c[3]*(c23*L[1]+c[3]*L[2]+1/2*L[3]))+MM_31
-    );
-    const MM_22 = MM2_I+1/4*(L[2]**2)*m[2]*L[2]*m[3]*(L[2]+c[3]*1/2*L[3])+MM_32;
-    const MM_23 = L[2]*m[3]*c[3]*1/2*L[3]+MM_33;
-
-    const G_1 = L[1]*c[1]*g*(1/2*m[1]+m[2]+m[3])+G_2;
-    const V_1 = (
-      L[1]*(s23*FN[0]+c23*FN[1])+
-      L[1]*m[3]*(s23*(-c23*L[1]*(td[1]**2)-L[2]*c[3]*((td[1]+td[2])**2)-1/2*L[3]*((td[1]+td[2]+td[3])**2))+c23*(s23*L[1]*(td[1]**2)+s[3]*L[2]*((td[1]+td[2])**2)))+
-      L[1]*m[2]*(s[2]*(-c[2]*(td[1]**2)*L[1]-1/2*L[2]*((td[1]+td[2])**2))+c[2]*(s[2]*(td[1]**2)*L[1]))+V_2
-    )
-    const MM_11 = (
-      m[1]/12*((L[1]**2)+(w[1]**2))+1/4*(L[1]**2)*m[1]+L[1]*m[3]*(s23*(s23*L[1]+s[3]*L[2])+c23*(c23*L[1]+c[3]*L[2]+1/2*L[3]))+
-      L[1]*m[2]*(s[2]*(s[2]*L[1])+c[2]*(c[2]*L[1]+1/2*L[2]))+MM_21
-    )
-    const MM_12 = (
-      L[1]*m[3]*(s23*(L[2]*s[3])+c23*(L[2]*c[3]+1/2*L[3]))+
-      L[1]*m[2]*(c[2]*1/2*L[2])+MM_22
-    )
-    const MM_13 = (
-      L[1]*m[3]*c12*1/2*L[3]+MM_23
-    )
-
-    const MM = matrix([
-      [MM_11, MM_12, MM_13],
-      [MM_21, MM_22, MM_23],
-      [MM_31, MM_32, MM_33]
-    ]);
-    const V = vector([-V_1, -V_2, -V_3]);
-    const G = vector([-G_1, -G_2, -G_3]);
-    const F = vector([-0.3 * td[1] - 0.3 * sign(td[1]), -0.3 * td[2] - 0.3 * sign(td[2]), -0.3 * td[3] - 0.3 * sign(td[3])]);
-    const TQS = vector(torques);
-
-    return multiply(inv(MM), (add(add(add(TQS, V), G), F)))
-  }
-
-  getAccelerations(t: number[], tdZeroIsIgnored: number[], torques: number[], L: number[], m: number[], w: number[], FN: number[], g: number) {
-    const td = tdZeroIsIgnored;
-    
-    const s = t.map(x => sin(x));
-    const c = t.map(x => cos(x));
-    c[12] = cos(t[1] + t[2]);
-    s[12] = sin(t[1] + t[2]);
-    const c_01 = cos(t[0] + t[1]);
-    const c_012 = cos(t[0] + t[1] + t[2]);
-
-    const mm_11 = (
-      1/12*(m[1]*(w[1]**2)+m[2]*(w[2]**2)+m[3]*(w[3]**2))+1/48*(L[1]**2)*m[1]+13/48*((L[2]**2)*m[2]+(L[3]**2)*m[3])+
-      L[1]*L[2]*c[1]*(2*m[3]+m[2])+(L[1]**2)*m[3]+L[1]*L[3]*m[3]+(L[1]**2)*m[2]+(L[2]**2)*m[3]+L[2]*L[3]*c[2]*m[3]
-    );
-    const mm_12 = (
-      1/12*(m[2]*(w[2]**2)+m[3]*(w[3]**2))+1/2*L[1]*L[3]*m[3]*c[12]+1/48*(L[2]**2)*m[2]+
-      13/48*(L[3]**2)*m[3]+L[1]*L[2]*c[1]*m[3]+(L[2]**2)*m[3]+L[2]*L[3]*c[2]*m[3]
-    );
-    const mm_13 = (
-      1/12*m[3]*(w[3]**2)+1/48*(L[3]**2)*m[3]
-    );
-    const V_1 = (
-      -L[1]*L[3]*m[3]*s[12]*(1/2*(td[2]**2)+1/2*(td[3]**2)+(td[1]*td[2])+(td[1]*td[3]))-L[2]*L[3]*m[3]*s[2]*(td[1]*td[3]+td[2]*td[3]+1/2*(td[3]**2))
-      -L[1]*L[2]*m[2]*s[1]*((td[2]**2)+td[1]*td[2])-L[1]*L[2]*m[3]*s[1]*(2*td[1]*td[2]+(td[2]**2))-L[1]*L[2]*m[3]*s[12]*td[2]*td[3]+
-      FN[0]*(L[1]*s[12]+L[2]*s[2])+FN[1]*(L[3]+L[2]*c[2]+L[1]*c[12])+FN[2]
-    );
-    const G_1 = L[1]*c[0]*g*(1/2*m[1]+m[2]+m[3])+L[2]*c_01*g*(1/2*m[2]+m[3])+1/2*L[3]*c_012*g*m[3];
-
-    const mm_21 = (
-      1/2*c[12]*L[1]*L[3]*m[3]+1/12*(m[2]*(w[2]**2)+m[3]*(w[3]**2))+13/48*((L[2]**2)*m[2]+(L[3]**2)*m[3])+L[1]*L[2]*c[1]*m[3]+
-      L[2]*L[3]*c[2]*m[3]+(L[2]**2)*m[3]+1/2*L[1]*L[2]*m[2]*c[1]
-    )
-    const mm_22 = (
-      1/12*(m[2]*(w[2]**2)+m[3]*(w[3]**2))+1/48*(L[2]**2)*m[2]+13/48*(L[3]**2)*m[3]+L[2]*L[3]*c[2]*m[3]+(L[2]**2)*m[3]
-    )
-    const mm_23 = (
-      1/12*m[3]*(w[3]**2)+1/48*(L[3]**2)*m[3]
-    )
-    const V_2 = (
-      -L[2]*L[3]*m[3]*s[2]*(1/2*(td[3]**2)+td[1]*td[3]+td[2]*td[3])+L[1]*L[2]*m[3]*s[1]*(td[1]**2)+
-      1/2*L[1]*L[3]*s[12]*m[3]*(td[1]**2)+FN[1]*(L[2]*c[2]+L[3])+FN[0]*(L[2]*s[2])+FN[2]
-    )
-    const G_2 = (
-      L[2]*c_01*g*(1/2*m[2]+m[3])+L[3]*c_012*g*(1/2*m[3])
-    )
-
-    const mm_31 = (
-      1/12*m[3]*(w[3]**2)+1/2*L[1]*L[3]*m[3]*c[12]+13/48*(L[3]**2)*m[3]+1/2*L[2]*L[3]*c[2]*m[3]
-    )
-    const mm_32 = (
-      1/12*m[3]*(w[3]**2)+13/48*(L[3]**2)*m[3]+1/2*L[2]*L[3]*c[2]*m[3]
-    )
-    const mm_33 = (
-      1/12*m[3]*(w[3]**2)+1/48*(L[3]**2)*m[3]
-    )
-    const V_3 = (
-      FN[1]*L[3]+FN[2]+1/2*L[1]*L[3]*m[3]*s[12]*(td[1]**2)+L[2]*L[3]*m[3]*s[2]*(1/2*((td[1]**2)+(td[2]**2)+td[1]*td[2]))
-    )
-    const G_3 = (
-      1/2*L[3]*m[3]*g*c_012
-    )
-
-    const MM = matrix([
-      [mm_11, mm_12, mm_13],
-      [mm_21, mm_22, mm_23],
-      [mm_31, mm_32, mm_33]
-    ]);
-    const V = vector([V_1, V_2, V_3]);
-    // const V = vector([0, 0, 0]);
-    const G = vector([G_1, G_2, G_3]);
-    const F = vector([-3000 * td[1] - 3000 * sign(td[1]), -3000 * td[2] - 3000 * sign(td[2]), -3000 * td[3] - 3000 * sign(td[3])]);
-    // console.log(V);
-
-    return multiply(inv(MM), (add(add(add(vector(torques), multiply(V, -1)), multiply(G, -1)), F)));
-
-  }
-
-  getGeneralAccelerations(t: number[], tdZeroIsIgnored: number[], torques: number[], L: number[], m: number[], w: number[], FN: number[], g: number) {
-    const n: string[] = [];
-    n[0] = `(-1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_3^2+(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_2+(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_3+(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/12)*m_1*theta_dot_dot_1*w_1^2+(1/12)*m_2*theta_dot_dot_1*w_2^2+(1/12)*m_2*theta_dot_dot_2*w_2^2+(1/12)*m_3*theta_dot_dot_1*w_3^2+(1/12)*m_3*theta_dot_dot_2*w_3^2+(1/12)*m_3*theta_dot_dot_3*w_3^2+(1/2)*L1*L2*cos(theta_1)*m_2*theta_dot_dot_2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_3+(1/2)*L1*cos(theta_0)*g*m_1+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_3+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3+(13/48)*L1^2*m_1*theta_dot_dot_1+(13/48)*L2^2*m_2*theta_dot_dot_1+(13/48)*L2^2*m_2*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_3-2*L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-2*L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1*theta_dot_2-L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_2^2-L1*L2*m_2*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_2^2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2*theta_dot_3-L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_1-L1*eefY*sin(theta_1)*sin(theta_2)-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+2*L1*L2*cos(theta_1)*cos(theta_2)^2*m_3*theta_dot_dot_1+2*L1*L2*cos(theta_1)*m_3*sin(theta_2)^2*theta_dot_dot_1+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3*theta_dot_dot_2+L1*L2*cos(theta_1)*m_2*theta_dot_dot_1+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2*theta_dot_dot_2+L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_1+L1*cos(theta_0)*cos(theta_1)^2*cos(theta_2)^2*g*m_3+L1*cos(theta_0)*cos(theta_1)^2*g*m_2+L1*cos(theta_0)*cos(theta_1)^2*g*m_3*sin(theta_2)^2+L1*cos(theta_0)*cos(theta_2)^2*g*m_3*sin(theta_1)^2+L1*cos(theta_0)*g*m_2*sin(theta_1)^2+L1*cos(theta_0)*g*m_3*sin(theta_1)^2*sin(theta_2)^2+L1*cos(theta_1)*cos(theta_2)*eefY+L1*cos(theta_1)*eefX*sin(theta_2)+L1*cos(theta_2)*eefX*sin(theta_1)+L1^2*cos(theta_1)^2*cos(theta_2)^2*m_3*theta_dot_dot_1+L1^2*cos(theta_1)^2*m_2*theta_dot_dot_1+L1^2*cos(theta_1)^2*m_3*sin(theta_2)^2*theta_dot_dot_1+L1^2*cos(theta_2)^2*m_3*sin(theta_1)^2*theta_dot_dot_1+L1^2*m_2*sin(theta_1)^2*theta_dot_dot_1+L1^2*m_3*sin(theta_1)^2*sin(theta_2)^2*theta_dot_dot_1+L2*L3*cos(theta_2)*m_3*theta_dot_dot_1+L2*L3*cos(theta_2)*m_3*theta_dot_dot_2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2+L2*cos(theta_2)*eefY+L2*eefX*sin(theta_2)+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_1+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_2+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_1+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_2+L3*eefY+eenZ`;
-    n[1] = `(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_1+(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/12)*m_2*theta_dot_dot_1*w_2^2+(1/12)*m_2*theta_dot_dot_2*w_2^2+(1/12)*m_3*theta_dot_dot_1*w_3^2+(1/12)*m_3*theta_dot_dot_2*w_3^2+(1/12)*m_3*theta_dot_dot_3*w_3^2+(1/2)*L1*L2*cos(theta_1)*m_2*theta_dot_dot_1+(1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_1+(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_3+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3+(13/48)*L2^2*m_2*theta_dot_dot_1+(13/48)*L2^2*m_2*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3*theta_dot_dot_1+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2*theta_dot_dot_1+L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1^2+L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1^2+L2*L3*cos(theta_2)*m_3*theta_dot_dot_1+L2*L3*cos(theta_2)*m_3*theta_dot_dot_2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2+L2*cos(theta_2)*eefY+L2*eefX*sin(theta_2)+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_1+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_2+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_1+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_2+L3*eefY+eenZ`;
-    n[2] = `(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_1+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/12)*m_3*theta_dot_dot_1*w_3^2+(1/12)*m_3*theta_dot_dot_2*w_3^2+(1/12)*m_3*theta_dot_dot_3*w_3^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_1+(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_1+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_2^2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3+(13/48)*L3^2*m_3*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_3+L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_2+L3*eefY+eenZ`;
-    const G: string[] = [];
-    const V: string[] = [];
-    const MM: string[][] = [[], [], []];
-
-    for (var i = 0; i < 3; i++) {
-      const nMod = n[i].split('+').join('§+').split('-').join('§-').split('§+(§-1/2)').join('§-(1/2)').split('(§-1/2)').join('-(1/2)');
-      const parts = nMod.split('§');
-      G[i] = '';
-      V[i] = '';
-      MM[i][0] = '';
-      MM[i][1] = '';
-      MM[i][2] = '';
-      for (var j = 0; j < parts.length; j++) {
-        if (parts[j].includes('g')) {
-          G[i] += `+(${parts[j]})`;
-        }
-        else if (parts[j].includes('theta_dot_dot_1')) {
-          MM[i][0] += `+(${parts[j]})`.split('*theta_dot_dot_1').join('');
-        }
-        else if (parts[j].includes('theta_dot_dot_2')) {
-          MM[i][1] += `+(${parts[j]})`.split('*theta_dot_dot_2').join('');
-        }
-        else if (parts[j].includes('theta_dot_dot_3')) {
-          MM[i][2] += `+(${parts[j]})`.split('*theta_dot_dot_3').join('');
-        }
-        else if (parts[j].includes('theta_dot_')) {
-          V[i] += `+(${parts[j]})`;
-        }
-        // if (parts[i].includes('theta_dot_dot_'))
-      }
-    }
-
-    // const V_vector = nerdamer(`matrix([${V[0]}], [${V[1]}], [${V[2]}])`);
-    // console.log("V_vector");
-    // console.log(V_vector.text());
-    const V_vector = `matrix([(-1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_3^2+(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2-2*L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-2*L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1*theta_dot_2-L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_2^2-L1*L2*m_2*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_2^2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3],[(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2+(1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3+L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1^2+L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1^2],[(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_2^2+L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_2])`;
-    // OLD & WRONG: const V_vector = `matrix([(-1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_3^2+(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2-2*L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-2*L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1*theta_dot_2-L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_2^2-L1*L2*m_2*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_2^2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3],[(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2+(1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3+L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1^2+L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1^2],[(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_2^2+L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_2])`;
-    // const G_vector = nerdamer(`matrix([${G[0]}], [${G[1]}], [${G[2]}])`);
-    // console.log("G_vector");
-    // console.log(G_vector.text());
-    const G_vector = `matrix([(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/2)*L1*cos(theta_0)*g*m_1+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+L1*cos(theta_0)*cos(theta_1)^2*cos(theta_2)^2*g*m_3+L1*cos(theta_0)*cos(theta_1)^2*g*m_2+L1*cos(theta_0)*cos(theta_1)^2*g*m_3*sin(theta_2)^2+L1*cos(theta_0)*cos(theta_2)^2*g*m_3*sin(theta_1)^2+L1*cos(theta_0)*g*m_2*sin(theta_1)^2+L1*cos(theta_0)*g*m_3*sin(theta_1)^2*sin(theta_2)^2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2],[(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2],[(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3])`;
-    // OLD & WRONG: const G_vector = `matrix([(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/2)*L1*cos(theta_0)*g*m_1+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+L1*cos(theta_0)*cos(theta_1)^2*cos(theta_2)^2*g*m_3+L1*cos(theta_0)*cos(theta_1)^2*g*m_2+L1*cos(theta_0)*cos(theta_1)^2*g*m_3*sin(theta_2)^2+L1*cos(theta_0)*cos(theta_2)^2*g*m_3*sin(theta_1)^2+L1*cos(theta_0)*g*m_2*sin(theta_1)^2+L1*cos(theta_0)*g*m_3*sin(theta_1)^2*sin(theta_2)^2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2],[(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2],[(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3])`;
-    const F_vector = nerdamer(`matrix([0.3*theta_dot_1+0.3*sign(theta_dot_1)], [0.3*theta_dot_2+0.3*sign(theta_dot_2)], [0.3*theta_dot_3+0.3*sign(theta_dot_3)])`);
-    const Torques_vector = nerdamer(`matrix([${torques[0]}], [${torques[1]}], [${torques[2]}])`);
-    // console.log("MM");
-    // console.log(nerdamer(`matrix([${MM[0][0]}, ${MM[0][1]}, ${MM[0][2]}], [${MM[1][0]}, ${MM[1][1]}, ${MM[1][2]}], [${MM[2][0]}, ${MM[2][1]}, ${MM[2][2]}])`).text());
-    // const MM_matrix = nerdamer(`matrix([${MM[0][0]}, ${MM[0][1]}, ${MM[0][2]}], [${MM[1][0]}, ${MM[1][1]}, ${MM[1][2]}], [${MM[2][0]}, ${MM[2][1]}, ${MM[2][2]}])`)
-    // console.log("MM_Matrix");
-    // console.log(MM_matrix.text());
-    const MM_matrix = `matrix([(1/12)*m_1*w_1^2+(1/12)*m_2*w_2^2+(1/12)*m_3*w_3^2+(13/48)*L1^2*m_1+(13/48)*L2^2*m_2+(13/48)*L3^2*m_3-L1*L3*m_3*sin(theta_1)*sin(theta_2)+2*L1*L2*cos(theta_1)*cos(theta_2)^2*m_3+2*L1*L2*cos(theta_1)*m_3*sin(theta_2)^2+L1*L2*cos(theta_1)*m_2+L1*L3*cos(theta_1)*cos(theta_2)*m_3+L1^2*cos(theta_1)^2*cos(theta_2)^2*m_3+L1^2*cos(theta_1)^2*m_2+L1^2*cos(theta_1)^2*m_3*sin(theta_2)^2+L1^2*cos(theta_2)^2*m_3*sin(theta_1)^2+L1^2*m_2*sin(theta_1)^2+L1^2*m_3*sin(theta_1)^2*sin(theta_2)^2+L2*L3*cos(theta_2)*m_3+L2^2*cos(theta_2)^2*m_3+L2^2*m_3*sin(theta_2)^2,(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)+(1/12)*m_2*w_2^2+(1/12)*m_3*w_3^2+(1/2)*L1*L2*cos(theta_1)*m_2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3+(13/48)*L2^2*m_2+(13/48)*L3^2*m_3+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2+L2*L3*cos(theta_2)*m_3+L2^2*cos(theta_2)^2*m_3+L2^2*m_3*sin(theta_2)^2,(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)+(1/12)*m_3*w_3^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3+(1/2)*L2*L3*cos(theta_2)*m_3+(13/48)*L3^2*m_3],[(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)+(1/12)*m_2*w_2^2+(1/12)*m_3*w_3^2+(1/2)*L1*L2*cos(theta_1)*m_2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3+(13/48)*L2^2*m_2+(13/48)*L3^2*m_3+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2+L2*L3*cos(theta_2)*m_3+L2^2*cos(theta_2)^2*m_3+L2^2*m_3*sin(theta_2)^2,(1/12)*m_2*w_2^2+(1/12)*m_3*w_3^2+(13/48)*L2^2*m_2+(13/48)*L3^2*m_3+L2*L3*cos(theta_2)*m_3+L2^2*cos(theta_2)^2*m_3+L2^2*m_3*sin(theta_2)^2,(1/12)*m_3*w_3^2+(1/2)*L2*L3*cos(theta_2)*m_3+(13/48)*L3^2*m_3],[(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)+(1/12)*m_3*w_3^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3+(1/2)*L2*L3*cos(theta_2)*m_3+(13/48)*L3^2*m_3,(1/12)*m_3*w_3^2+(1/2)*L2*L3*cos(theta_2)*m_3+(13/48)*L3^2*m_3,(1/12)*m_3*w_3^2+(13/48)*L3^2*m_3])`;
-    // OLD & WRONG: const MM_matrix = nerdamer(`matrix([(1/12)*m_1*w_1^2+(1/12)*m_2*w_2^2+(1/12)*m_3*w_3^2+(1/48)*L1^2*m_1+(13/48)*L2^2*m_2+(13/48)*L3^2*m_3-L1*L3*m_3*sin(theta_1)*sin(theta_2)+2*L1*L2*cos(theta_1)*cos(theta_2)^2*m_3+2*L1*L2*cos(theta_1)*m_3*sin(theta_2)^2+L1*L2*cos(theta_1)*m_2+L1*L3*cos(theta_1)*cos(theta_2)*m_3+L1^2*cos(theta_1)^2*cos(theta_2)^2*m_3+L1^2*cos(theta_1)^2*m_2+L1^2*cos(theta_1)^2*m_3*sin(theta_2)^2+L1^2*cos(theta_2)^2*m_3*sin(theta_1)^2+L1^2*m_2*sin(theta_1)^2+L1^2*m_3*sin(theta_1)^2*sin(theta_2)^2+L2*L3*cos(theta_2)*m_3+L2^2*cos(theta_2)^2*m_3+L2^2*m_3*sin(theta_2)^2,(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)+(1/12)*m_2*w_2^2+(1/12)*m_3*w_3^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3+(1/48)*L2^2*m_2+(13/48)*L3^2*m_3+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2+L2*L3*cos(theta_2)*m_3+L2^2*cos(theta_2)^2*m_3+L2^2*m_3*sin(theta_2)^2,(1/12)*m_3*w_3^2+(1/48)*L3^2*m_3],[(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)+(1/12)*m_2*w_2^2+(1/12)*m_3*w_3^2+(1/2)*L1*L2*cos(theta_1)*m_2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3+(13/48)*L2^2*m_2+(13/48)*L3^2*m_3+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2+L2*L3*cos(theta_2)*m_3+L2^2*cos(theta_2)^2*m_3+L2^2*m_3*sin(theta_2)^2,(1/12)*m_2*w_2^2+(1/12)*m_3*w_3^2+(1/48)*L2^2*m_2+(13/48)*L3^2*m_3+L2*L3*cos(theta_2)*m_3+L2^2*cos(theta_2)^2*m_3+L2^2*m_3*sin(theta_2)^2,(1/12)*m_3*w_3^2+(1/48)*L3^2*m_3],[(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)+(1/12)*m_3*w_3^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3+(1/2)*L2*L3*cos(theta_2)*m_3+(13/48)*L3^2*m_3,(1/12)*m_3*w_3^2+(1/2)*L2*L3*cos(theta_2)*m_3+(13/48)*L3^2*m_3,(1/12)*m_3*w_3^2+(1/48)*L3^2*m_3])`);
-    const mms = nerdamer(MM_matrix, {
-      theta_0: t[0].toString(), theta_1: t[1].toString(), theta_2: t[2].toString(),
-      theta_dot_1: tdZeroIsIgnored[1].toString(), theta_dot_2: tdZeroIsIgnored[2].toString(), theta_dot_3: tdZeroIsIgnored[3].toString(),
-      L1: L[1].toString(), L2: L[2].toString(), L3: L[3].toString(), m_1: m[1].toString(), m_2: m[2].toString(), m_3: m[3].toString(),
-      w_1: w[1].toString(), w_2: w[2].toString(), w_3: w[3].toString(), g: g.toString(),
-      eefX: FN[0].toString(), eefY: FN[1].toString(), eenZ: FN[2].toString()
-    }).evaluate();
-    const MM_matrix_rearranged = nerdamer(`matrix([matget(${mms}, 0, 0), matget(${mms}, 1, 0), matget(${mms}, 2, 0)], [matget(${mms}, 3, 0), matget(${mms}, 4, 0), matget(${mms}, 5, 0)], [matget(${mms}, 6, 0), matget(${mms}, 7, 0), matget(${mms}, 8, 0)])`);
-
-    const res = nerdamer(`invert(${MM_matrix_rearranged})*(${Torques_vector}-${V_vector}-${G_vector}-${F_vector})`, { 
-      theta_0: t[0].toString(), theta_1: t[1].toString(), theta_2: t[2].toString(),
-      theta_dot_1: tdZeroIsIgnored[1].toString(), theta_dot_2: tdZeroIsIgnored[2].toString(), theta_dot_3: tdZeroIsIgnored[3].toString(),
-      L1: L[1].toString(), L2: L[2].toString(), L3: L[3].toString(), m_1: m[1].toString(), m_2: m[2].toString(), m_3: m[3].toString(),
-      w_1: w[1].toString(), w_2: w[2].toString(), w_3: w[3].toString(), g: g.toString(),
-      eefX: FN[0].toString(), eefY: FN[1].toString(), eenZ: FN[2].toString()
-    }).evaluate();
-
-    return vector([
-      parseFloat(nerdamer(`matget(${res}, 0, 0)`).text('decimals')),
-      parseFloat(nerdamer(`matget(${res}, 1, 0)`).text('decimals')),
-      parseFloat(nerdamer(`matget(${res}, 2, 0)`).text('decimals')),
-    ]);
-
-  }
-
-  getGeneralTorques(t: number[], tdZeroIsIgnored: number[], tddZeroIsIgnored: number[], L: number[], m: number[], w: number[], FN: number[], g: number) {
-    
+  getGeneralJacobian(joint_angles: number[], L: number[], code: math.EvalFunction) {
     // nerdamer.setVar('R01', 'matrix([cos(theta_0), -sin(theta_0), 0], [sin(theta_0), cos(theta_0), 0], [0, 0, 1])');
     // nerdamer.setVar('R12', 'matrix([cos(theta_1), -sin(theta_1), 0], [sin(theta_1), cos(theta_1), 0], [0, 0, 1])');
     // nerdamer.setVar('R23', 'matrix([cos(theta_2), -sin(theta_2), 0], [sin(theta_2), cos(theta_2), 0], [0, 0, 1])');
@@ -692,8 +295,6 @@ export default class TwoDRobot {
 
     // nerdamer.setVar('omega_0', 'matrix([0], [0], [0])');
     // nerdamer.setVar('v_0', 'matrix([0], [0], [0])');
-    // nerdamer.setVar('omega_dot_0', 'matrix([0], [0], [0])')
-    // nerdamer.setVar('v_dot_0', 'matrix([0], [g], [0])');
     // nerdamer.setConstant('L0', 0);
 
     // for (var i = 1; i <= 4; i++) {
@@ -701,163 +302,381 @@ export default class TwoDRobot {
     //     nerdamer.setVar(`omega_${i}`, `(R${i}${i-1}*omega_${i-1})+(matrix([0],[0],[0]))`);
     //     const vectorizedOmega = nerdamer(`[matget(omega_${i-1}, 0, 0), matget(omega_${i-1}, 1, 0), matget(omega_${i-1}, 2, 0)]`).text();
     //     nerdamer.setVar(`v_${i}`, `(R${i}${i-1})*(v_${i-1}+(cross(${vectorizedOmega}, [L${i-1}, 0, 0])))`);
-
-    //     nerdamer.setVar(`omega_dot_${i}`, `(R${i}${i-1}*omega_dot_${i-1})+(matrix([0], [0], [0]))`);
-    //     const vectorizedOmegaDot = nerdamer(`[matget(omega_dot_${i-1}, 0, 0), matget(omega_dot_${i-1}, 1, 0), matget(omega_dot_${i-1}, 2, 0)]`).text();
-    //     nerdamer.setVar(`v_dot_${i}`, `(R${i}${i-1})*((cross(${vectorizedOmegaDot}, [L${i-1}, 0, 0]))+(cross(${vectorizedOmega}, cross(${vectorizedOmega}, [L${i-1}, 0, 0])))+(v_dot_${i-1}))`);
-
     //   }
     //   else {
-    //     nerdamer.setVar(`omega_${i}`, `(R${i}${i-1}*omega_${i-1})+(matrix([0],[0],[theta_dot_${i}]))`);
+    //     nerdamer.setVar(`omega_${i}`, `(R${i}${i-1}*omega_${i-1})+(matrix([0],[0],[theta_dot_${i-1}]))`);
     //     const vectorizedOmega = nerdamer(`[matget(omega_${i-1}, 0, 0), matget(omega_${i-1}, 1, 0), matget(omega_${i-1}, 2, 0)]`).text();
     //     nerdamer.setVar(`v_${i}`, `(R${i}${i-1})*(v_${i-1}+(cross(${vectorizedOmega}, [L${i-1}, 0, 0])))`);
-
-    //     nerdamer.setVar(`omega_dot_${i}`, `(R${i}${i-1}*omega_dot_${i-1})+(matrix([0], [0], [theta_dot_dot_${i}]))`);
-    //     const vectorizedOmegaDot = nerdamer(`[matget(omega_dot_${i-1}, 0, 0), matget(omega_dot_${i-1}, 1, 0), matget(omega_dot_${i-1}, 2, 0)]`).text();
-    //     nerdamer.setVar(`v_dot_${i}`, `(R${i}${i-1})*((cross(${vectorizedOmegaDot}, [L${i-1}, 0, 0]))+(cross(${vectorizedOmega}, cross(${vectorizedOmega}, [L${i-1}, 0, 0])))+(v_dot_${i-1}))`);
-
-    //     nerdamer.setVar(`I_${i}`, `matrix([(m_${i}/12)*(((w_${i})^2)+((h_${i})^2)), 0, 0], [0, (m_${i}/12)*(((L${i}/2)^2)+((h_${i})^2)), 0], [0, 0, (m_${i}/12)*(((L${i}/2)^2)+((w_${i})^2))])`);
-    //     const vectorizedOmegaI = nerdamer(`[matget(omega_${i}, 0, 0), matget(omega_${i}, 1, 0), matget(omega_${i}, 2, 0)]`).text();
-    //     const vectorizedOmegaIDot = nerdamer(`[matget(omega_dot_${i}, 0, 0), matget(omega_dot_${i}, 1, 0), matget(omega_dot_${i}, 2, 0)]`).text();
-    //     nerdamer.setVar(`vc_dot_${i}`, `(cross(${vectorizedOmegaIDot}, [L${i}/2, 0, 0]))+(cross(${vectorizedOmegaI}, cross(${vectorizedOmegaI}, [L${i}/2, 0, 0])))+v_dot_${i}`);
-    //     // YOU DUMB MORON - examine what this changes, there was ^^ an error right here where I had "vectorizedOmegaDot" instead of "vectorizedOmegaIDot"
-
-    //     nerdamer.setVar(`F_${i}`, `m_${i}*vc_dot_${i}`);
-    //     const vectorizedITimesOmega = nerdamer(`[matget((I_${i}*omega_${i}), 0, 0), matget((I_${i}*omega_${i}), 1, 0), matget((I_${i}*omega_${i}), 2, 0)]`);
-    //     nerdamer.setVar(`N_${i}`, `(I_${i}*omega_dot_${i})+(cross(${vectorizedOmegaI}, ${vectorizedITimesOmega}))`);
-
     //   }
     // }
 
-    // for (var i = 3; i >= 1; i--) {
-
-    //   if (i === 3) {
-    //     nerdamer.setVar(`f_${i}`, `(R${i}${i+1}*(matrix([eefX], [eefY], [0])))+(F_${i})`);
-    //     const vectorizedFI = nerdamer(`[matget(F_${i}, 0, 0), matget(F_${i}, 1, 0), matget(F_${i}, 2, 0)]`).text();
-    //     const vectorizedRf = nerdamer(`[matget((R${i}${i+1})*matrix([eefX], [eefY], [0]), 0, 0), matget((R${i}${i+1})*matrix([eefX], [eefY], [0]), 1, 0), matget((R${i}${i+1})*matrix([eefX], [eefY], [0]), 2, 0)]`).text();
-    //     nerdamer.setVar(`n_${i}`, `(N_${i})+((R${i}${i+1})*(matrix([0], [0], [eenZ])))+(cross([L${i}/2, 0, 0], ${vectorizedFI}))+(cross([L${i}, 0, 0], ${vectorizedRf}))`)
+    // const v_4 = nerdamer.getVars('text')['v_4'];
+    // const omega_4 = nerdamer.getVars('text')['omega_4'];
+    // const ja = [['0', '0', '0'], ['0', '0', '0'], ['0', '0', '0']];
+    // for (var i = 1; i < 4; i++) {
+    //   for (var j = 0; j < 3; j++) {
+    //     const x = nerdamer(`expand(matget(${j === 2 ? omega_4 : v_4}, ${j}, 0))`)
+    //       .text()
+    //       .split('+')
+    //       .filter(x => x.includes(`theta_dot_${i - 1}`))
+    //       .map(x => x.replace(`theta_dot_${i - 1}`, '1'))
+    //       .join('+');
+    //     if (x != '') ja[i-1][j] = x;
     //   }
-    //   else {
-    //     nerdamer.setVar(`f_${i}`, `(R${i}${i+1}*f_${i+1})+(F_${i})`);
-    //     const vectorizedFI = nerdamer(`[matget(F_${i}, 0, 0), matget(F_${i}, 1, 0), matget(F_${i}, 2, 0)]`).text();
-    //     const vectorizedRf = nerdamer(`[matget((R${i}${i+1})*f_${i+1}, 0, 0), matget((R${i}${i+1})*f_${i+1}, 1, 0), matget((R${i}${i+1})*f_${i+1}, 2, 0)]`).text();
-    //     nerdamer.setVar(`n_${i}`, `(N_${i})+((R${i}${i+1})*(n_${i+1}))+(cross([L${i}/2, 0, 0], ${vectorizedFI}))+(cross([L${i}, 0, 0], ${vectorizedRf}))`)
-    //   }
-
     // }
+    // const jacobian = nerdamer(`matrix([(${ja[0][0]}), (${ja[0][1]}), (${ja[0][2]})], [(${ja[1][0]}), (${ja[1][1]}), (${ja[1][2]})], [(${ja[2][0]}), (${ja[2][1]}), (${ja[2][2]})])`);
+    // const jacobian = nerdamer('matrix([L1*cos(theta_1)*sin(theta_2)+L1*cos(theta_2)*sin(theta_1)+L2*sin(theta_2),-L1*sin(theta_1)*sin(theta_2)+L1*cos(theta_1)*cos(theta_2)+L2*cos(theta_2)+L3,1],[L2*sin(theta_2),L2*cos(theta_2)+L3,1],[0,L3,1])');
+    // const solvedJacobian = nerdamer(jacobian, { theta_0: joint_angles[0].toString(), theta_1: joint_angles[1].toString(), theta_2: joint_angles[2].toString(), L0: L[0].toString(), L1: L[1].toString(), L2: L[2].toString(), L3: L[3].toString() });
+    // const solvedDownToZero = nerdamer(`matrix([cos(theta_0 + theta_1 + theta_2), sin(theta_0 + theta_1 + theta_2), 0], [-sin(theta_0 + theta_1 + theta_2), cos(theta_0 + theta_1 + theta_2), 0], [0, 0, 1])`, { theta_0: joint_angles[0].toString(), theta_1: joint_angles[1].toString(), theta_2: joint_angles[2].toString() });
+    // const genJacobian = nerdamer(`${jacobian.text('decimals')}*${solvedDownToZero.text('decimals')}`);
+    const scope = {
+      L1: L[1],
+      L2: L[2],
+      L3: L[3],
+      theta_0: joint_angles[0],
+      theta_1: joint_angles[1],
+      theta_2: joint_angles[2],
+    }
+    
+    const genJacobian = code.evaluate(scope);
+    return transpose(genJacobian);
+    // console.log(genJacobian.text('fractions'));
+    // console.log(eval(nerdamer(`matget(${genJacobian}, 0, 0)`).text('fractions')));
+    // console.log(evaluate(nerdamer(`matget(${genJacobian}, 0, 0)`).text('fractions')));
+    // console.log(nerdamer(`matget(${genJacobian}, 0, 0)`).text('fractions'));
+    // return matrix([
+    //   [
+    //     parseFloat(nerdamer(`matget(${genJacobian}, 0, 0)`).evaluate().text('decimals')),
+    //     parseFloat(nerdamer(`matget(${genJacobian}, 1, 0)`).evaluate().text('decimals')),
+    //     parseFloat(nerdamer(`matget(${genJacobian}, 2, 0)`).evaluate().text('decimals')),
+    //   ],
+    //   [
+    //     parseFloat(nerdamer(`matget(${genJacobian}, 0, 1)`).evaluate().text('decimals')),
+    //     parseFloat(nerdamer(`matget(${genJacobian}, 1, 1)`).evaluate().text('decimals')),
+    //     parseFloat(nerdamer(`matget(${genJacobian}, 2, 1)`).evaluate().text('decimals')),
+    //   ],
+    //   [
+    //     parseFloat(nerdamer(`matget(${genJacobian}, 0, 2)`).evaluate().text('decimals')),
+    //     parseFloat(nerdamer(`matget(${genJacobian}, 1, 2)`).evaluate().text('decimals')),
+    //     parseFloat(nerdamer(`matget(${genJacobian}, 2, 2)`).evaluate().text('decimals')),
+    //   ],
+    // ]);
+  }
 
-    const n: string[] = [];
-    // OLD & WRONG: n[0] = `(-1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_3^2+(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_2+(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/12)*m_1*theta_dot_dot_1*w_1^2+(1/12)*m_2*theta_dot_dot_1*w_2^2+(1/12)*m_2*theta_dot_dot_2*w_2^2+(1/12)*m_3*theta_dot_dot_1*w_3^2+(1/12)*m_3*theta_dot_dot_2*w_3^2+(1/12)*m_3*theta_dot_dot_3*w_3^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_2+(1/2)*L1*cos(theta_0)*g*m_1+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3+(1/48)*L1^2*m_1*theta_dot_dot_1+(1/48)*L2^2*m_2*theta_dot_dot_2+(1/48)*L3^2*m_3*theta_dot_dot_3+(13/48)*L2^2*m_2*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_2-2*L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-2*L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1*theta_dot_2-L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_2^2-L1*L2*m_2*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_2^2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2*theta_dot_3-L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_1-L1*eefY*sin(theta_1)*sin(theta_2)-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+2*L1*L2*cos(theta_1)*cos(theta_2)^2*m_3*theta_dot_dot_1+2*L1*L2*cos(theta_1)*m_3*sin(theta_2)^2*theta_dot_dot_1+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3*theta_dot_dot_2+L1*L2*cos(theta_1)*m_2*theta_dot_dot_1+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2*theta_dot_dot_2+L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_1+L1*cos(theta_0)*cos(theta_1)^2*cos(theta_2)^2*g*m_3+L1*cos(theta_0)*cos(theta_1)^2*g*m_2+L1*cos(theta_0)*cos(theta_1)^2*g*m_3*sin(theta_2)^2+L1*cos(theta_0)*cos(theta_2)^2*g*m_3*sin(theta_1)^2+L1*cos(theta_0)*g*m_2*sin(theta_1)^2+L1*cos(theta_0)*g*m_3*sin(theta_1)^2*sin(theta_2)^2+L1*cos(theta_1)*cos(theta_2)*eefY+L1*cos(theta_1)*eefX*sin(theta_2)+L1*cos(theta_2)*eefX*sin(theta_1)+L1^2*cos(theta_1)^2*cos(theta_2)^2*m_3*theta_dot_dot_1+L1^2*cos(theta_1)^2*m_2*theta_dot_dot_1+L1^2*cos(theta_1)^2*m_3*sin(theta_2)^2*theta_dot_dot_1+L1^2*cos(theta_2)^2*m_3*sin(theta_1)^2*theta_dot_dot_1+L1^2*m_2*sin(theta_1)^2*theta_dot_dot_1+L1^2*m_3*sin(theta_1)^2*sin(theta_2)^2*theta_dot_dot_1+L2*L3*cos(theta_2)*m_3*theta_dot_dot_1+L2*L3*cos(theta_2)*m_3*theta_dot_dot_2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2+L2*cos(theta_2)*eefY+L2*eefX*sin(theta_2)+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_1+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_2+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_1+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_2+L3*eefY+eenZ`;
-    n[0] = `(-1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2^2+(-1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_3^2+(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_2+(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_3+(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/12)*m_1*theta_dot_dot_1*w_1^2+(1/12)*m_2*theta_dot_dot_1*w_2^2+(1/12)*m_2*theta_dot_dot_2*w_2^2+(1/12)*m_3*theta_dot_dot_1*w_3^2+(1/12)*m_3*theta_dot_dot_2*w_3^2+(1/12)*m_3*theta_dot_dot_3*w_3^2+(1/2)*L1*L2*cos(theta_1)*m_2*theta_dot_dot_2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_3+(1/2)*L1*cos(theta_0)*g*m_1+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_3+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3+(13/48)*L1^2*m_1*theta_dot_dot_1+(13/48)*L2^2*m_2*theta_dot_dot_1+(13/48)*L2^2*m_2*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_3-2*L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-2*L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1*theta_dot_2-L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_2^2-L1*L2*m_2*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_2^2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_2-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1*theta_dot_3-L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_2*theta_dot_3-L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_1-L1*eefY*sin(theta_1)*sin(theta_2)-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+2*L1*L2*cos(theta_1)*cos(theta_2)^2*m_3*theta_dot_dot_1+2*L1*L2*cos(theta_1)*m_3*sin(theta_2)^2*theta_dot_dot_1+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3*theta_dot_dot_2+L1*L2*cos(theta_1)*m_2*theta_dot_dot_1+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2*theta_dot_dot_2+L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_1+L1*cos(theta_0)*cos(theta_1)^2*cos(theta_2)^2*g*m_3+L1*cos(theta_0)*cos(theta_1)^2*g*m_2+L1*cos(theta_0)*cos(theta_1)^2*g*m_3*sin(theta_2)^2+L1*cos(theta_0)*cos(theta_2)^2*g*m_3*sin(theta_1)^2+L1*cos(theta_0)*g*m_2*sin(theta_1)^2+L1*cos(theta_0)*g*m_3*sin(theta_1)^2*sin(theta_2)^2+L1*cos(theta_1)*cos(theta_2)*eefY+L1*cos(theta_1)*eefX*sin(theta_2)+L1*cos(theta_2)*eefX*sin(theta_1)+L1^2*cos(theta_1)^2*cos(theta_2)^2*m_3*theta_dot_dot_1+L1^2*cos(theta_1)^2*m_2*theta_dot_dot_1+L1^2*cos(theta_1)^2*m_3*sin(theta_2)^2*theta_dot_dot_1+L1^2*cos(theta_2)^2*m_3*sin(theta_1)^2*theta_dot_dot_1+L1^2*m_2*sin(theta_1)^2*theta_dot_dot_1+L1^2*m_3*sin(theta_1)^2*sin(theta_2)^2*theta_dot_dot_1+L2*L3*cos(theta_2)*m_3*theta_dot_dot_1+L2*L3*cos(theta_2)*m_3*theta_dot_dot_2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2+L2*cos(theta_2)*eefY+L2*eefX*sin(theta_2)+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_1+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_2+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_1+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_2+L3*eefY+eenZ`;
-    // const n1 = nerdamer('matget(n_1, 2, 0)');
-    // console.log(n1.expand().text('fractions'));
-    // OLD & WRONG: n[1] = `(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_1+(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/12)*m_2*theta_dot_dot_1*w_2^2+(1/12)*m_2*theta_dot_dot_2*w_2^2+(1/12)*m_3*theta_dot_dot_1*w_3^2+(1/12)*m_3*theta_dot_dot_2*w_3^2+(1/12)*m_3*theta_dot_dot_3*w_3^2+(1/2)*L1*L2*cos(theta_1)*m_2*theta_dot_dot_1+(1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_1+(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3+(1/48)*L2^2*m_2*theta_dot_dot_2+(1/48)*L3^2*m_3*theta_dot_dot_3+(13/48)*L2^2*m_2*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_2-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3*theta_dot_dot_1+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2*theta_dot_dot_1+L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1^2+L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1^2+L2*L3*cos(theta_2)*m_3*theta_dot_dot_1+L2*L3*cos(theta_2)*m_3*theta_dot_dot_2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2+L2*cos(theta_2)*eefY+L2*eefX*sin(theta_2)+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_1+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_2+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_1+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_2+L3*eefY+eenZ`;
-    n[1] = `(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_1+(-1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_3^2+(-1/2)*L2*g*m_2*sin(theta_0)*sin(theta_1)+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/12)*m_2*theta_dot_dot_1*w_2^2+(1/12)*m_2*theta_dot_dot_2*w_2^2+(1/12)*m_3*theta_dot_dot_1*w_3^2+(1/12)*m_3*theta_dot_dot_2*w_3^2+(1/12)*m_3*theta_dot_dot_3*w_3^2+(1/2)*L1*L2*cos(theta_1)*m_2*theta_dot_dot_1+(1/2)*L1*L2*m_2*sin(theta_1)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_1+(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_3+(1/2)*L2*cos(theta_0)*cos(theta_1)*g*m_2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3+(13/48)*L2^2*m_2*theta_dot_dot_1+(13/48)*L2^2*m_2*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_3-L2*L3*m_3*sin(theta_2)*theta_dot_2*theta_dot_3-L2*cos(theta_2)^2*g*m_3*sin(theta_0)*sin(theta_1)-L2*g*m_3*sin(theta_0)*sin(theta_1)*sin(theta_2)^2+L1*L2*cos(theta_1)*cos(theta_2)^2*m_3*theta_dot_dot_1+L1*L2*cos(theta_1)*m_3*sin(theta_2)^2*theta_dot_dot_1+L1*L2*cos(theta_2)^2*m_3*sin(theta_1)*theta_dot_1^2+L1*L2*m_3*sin(theta_1)*sin(theta_2)^2*theta_dot_1^2+L2*L3*cos(theta_2)*m_3*theta_dot_dot_1+L2*L3*cos(theta_2)*m_3*theta_dot_dot_2+L2*cos(theta_0)*cos(theta_1)*cos(theta_2)^2*g*m_3+L2*cos(theta_0)*cos(theta_1)*g*m_3*sin(theta_2)^2+L2*cos(theta_2)*eefY+L2*eefX*sin(theta_2)+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_1+L2^2*cos(theta_2)^2*m_3*theta_dot_dot_2+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_1+L2^2*m_3*sin(theta_2)^2*theta_dot_dot_2+L3*eefY+eenZ`;
-    // console.log(n[1]);
-    // const n2 = nerdamer('matget(n_2, 2, 0)');
-    // console.log(n2.expand().text('fractions'));
-    // OLD & WRONG: n[2] = `(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_1+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/12)*m_3*theta_dot_dot_1*w_3^2+(1/12)*m_3*theta_dot_dot_2*w_3^2+(1/12)*m_3*theta_dot_dot_3*w_3^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_1+(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_1+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_2^2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3+(1/48)*L3^2*m_3*theta_dot_dot_3+(13/48)*L3^2*m_3*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_2+L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_2+L3*eefY+eenZ`;
-    n[2] = `(-1/2)*L1*L3*m_3*sin(theta_1)*sin(theta_2)*theta_dot_dot_1+(-1/2)*L3*cos(theta_0)*g*m_3*sin(theta_1)*sin(theta_2)+(-1/2)*L3*cos(theta_1)*g*m_3*sin(theta_0)*sin(theta_2)+(-1/2)*L3*cos(theta_2)*g*m_3*sin(theta_0)*sin(theta_1)+(1/12)*m_3*theta_dot_dot_1*w_3^2+(1/12)*m_3*theta_dot_dot_2*w_3^2+(1/12)*m_3*theta_dot_dot_3*w_3^2+(1/2)*L1*L3*cos(theta_1)*cos(theta_2)*m_3*theta_dot_dot_1+(1/2)*L1*L3*cos(theta_1)*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L1*L3*cos(theta_2)*m_3*sin(theta_1)*theta_dot_1^2+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_1+(1/2)*L2*L3*cos(theta_2)*m_3*theta_dot_dot_2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_1^2+(1/2)*L2*L3*m_3*sin(theta_2)*theta_dot_2^2+(1/2)*L3*cos(theta_0)*cos(theta_1)*cos(theta_2)*g*m_3+(13/48)*L3^2*m_3*theta_dot_dot_1+(13/48)*L3^2*m_3*theta_dot_dot_2+(13/48)*L3^2*m_3*theta_dot_dot_3+L2*L3*m_3*sin(theta_2)*theta_dot_1*theta_dot_2+L3*eefY+eenZ`;
-    // const n3 = nerdamer('matget(n_3, 2, 0)');
-    // console.log(n3.expand().text('fractions'));
-    // console.log(n[2]);
+  // getInverseGeneralJacobian(joint_angles: number[], L: number[]) {
+  //   const jacobian = this.getGeneralJacobian(joint_angles, L);
+  //   return inv(jacobian);
+  // }
 
-    // console.log(nerdamer('matget(n_2, 2, 0)').expand().text('fractions').split('+').join(' + ').split('-').join(' - '));
-    // console.log(nerdamer('matget(n_3, 2, 0)').expand().text('fractions').split('+').join(' + ').split('-').join(' - '));
+  getRRRDynamicsVector(u: number[], g: number, torques: number[], timestep: number, m: number[], L: number[], w: number[], f_c_static: number[], f_c_dynamic: number[], f_v: number[], FN: number[]) {
+    const c123 = cos(u[1] + u[3] + u[5]);
+    const c12 = cos(u[1] + u[3]);
+    const c23 = cos(u[3] + u[5]);
+    const c1 = cos(u[1]);
+    const c2 = cos(u[3]);
+    const c3 = cos(u[5]);
 
-    const G: string[] = [];
-    const V: string[] = [];
-    const MM: string[][] = [[], [], []];
+    const s23 = sin(u[3] + u[5]);
+    const s3 = sin(u[5]);
+    const s2 = sin(u[3]);
 
-    for (var i = 0; i < 3; i++) {
-      const nMod = n[i].split('+').join('§+').split('-').join('§-').split('§+(§-1/2)').join('§-(1/2)').split('(§-1/2)').join('-(1/2)');
-      const parts = nMod.split('§');
-      G[i] = '';
-      V[i] = '';
-      MM[i][0] = '';
-      MM[i][1] = '';
-      MM[i][2] = '';
-      for (var j = 0; j < parts.length; j++) {
-        if (parts[j].includes('g')) {
-          G[i] += `+(${parts[j]})`;
-        }
-        else if (parts[j].includes('theta_dot_dot_1')) {
-          MM[i][0] += `+(${parts[j]})`.split('*theta_dot_dot_1').join('');
-        }
-        else if (parts[j].includes('theta_dot_dot_2')) {
-          MM[i][1] += `+(${parts[j]})`.split('*theta_dot_dot_2').join('');
-        }
-        else if (parts[j].includes('theta_dot_dot_3')) {
-          MM[i][2] += `+(${parts[j]})`.split('*theta_dot_dot_3').join('');
-        }
-        else if (parts[j].includes('theta_dot_')) {
-          V[i] += `+(${parts[j]})`;
-        }
-        // if (parts[i].includes('theta_dot_dot_'))
-      }
+    const G3 = 1/2*L[3]*m[3]*c123*g;
+    const G2 = G3 + L[2]*c12*g*(1/2*m[2]+m[3]);
+    const G1 = G2 + L[1]*c1*g*(1/2*m[1]+m[2]+m[3]);
+
+    const V3 = 1/2*L[3]*m[3]*(s23*L[1]*(u[2]**2)+s3*L[2]*((u[2]+u[4])**2))+FN[2]+L[3]*FN[1];
+    const V2 = V3 + 1/2*L[2]*m[2]*s2*L[1]*(u[2]**2)+L[2]*(s3*FN[0]+c3*FN[1]+m[3]*(s2*L[1]*(u[2]**2)+1/2*L[3]*(-s3*((u[2]+u[4]+u[6])**2))));
+    const V1 = V2 + L[1]*(s23*FN[0]+c23*FN[1]+(m[3]+1/2*m[2])*(-s2*L[2]*((u[2]+u[4])**2))-1/2*m[3]*L[3]*s23*((u[2]+u[4]+u[6])**2));
+
+    const M31 = 1/12*m[3]*((L[3]**2)+(w[3]**2))+1/2*L[3]*m[3]*(c23*L[1]+c3*L[2]+1/2*L[3]);
+    const M32 = 1/12*m[3]*((L[3]**2)+(w[3]**2))+1/2*L[3]*m[3]*(c3*L[2]+1/2*L[3]);
+    const M33 = 1/12*m[3]*((L[3]**2)+(w[3]**2))+1/2*L[3]*m[3]*(1/2*L[3]);
+
+    const M21 = M31 + 1/12*m[2]*((L[2]**2)+(w[2]**2))+1/2*L[2]*m[2]*(c2*L[1]+1/2*L[2])+L[2]*m[3]*(c2*L[1]+L[2]+1/2*L[3]*c3);
+    const M22 = M32 + 1/12*m[2]*((L[2]**2)+(w[2]**2))+1/2*L[2]*m[2]*(1/2*L[2])+L[2]*m[3]*(L[2]+1/2*L[3]*c3);
+    const M23 = M33 + 1/2*L[2]*L[3]*m[3]*c3;
+
+    const M11 = M21 + 1/12*m[1]*((L[1]**2)+(w[1]**2))+(L[1]**2)*(1/4*m[1]+m[2]+m[3])+L[1]*((m[3]+1/2*m[2])*c2*L[2]+1/2*m[3]*L[3]*c23);
+    const M12 = M22 + L[1]*(c2*L[2]*(m[3]+1/2*m[2])+1/2*m[3]*L[3]*c23);
+    const M13 = M23 + 1/2*m[3]*L[3]*L[1]*c23;
+
+    const F3 = (Math.abs(u[6]) > 0.01 ? f_c_dynamic[2] : f_c_static[2])*sign(u[6])+f_v[2]*u[6];
+    const F2 = (Math.abs(u[4]) > 0.01 ? f_c_dynamic[1] : f_c_static[1])*sign(u[4])+f_v[1]*u[4];
+    const F1 = (Math.abs(u[2]) > 0.01 ? f_c_dynamic[0] : f_c_static[0])*sign(u[2])+f_v[0]*u[2];
+
+    const invM = inv(matrix([[M11, M12, M13], [M21, M22, M23], [M31, M32, M33]]));
+
+    const vect = multiply(invM, (add(add(add(vector([torques[1], torques[2], torques[3]]), vector([-V1, -V2, -V3])), vector([-G1, -G2, -G3])), vector([-F1, -F2, -F3]))));
+    return vect;
+  }
+
+  getControlTorquesForDynamicsRRR(g: number, tD: number[], tdD: number[], tddD: number[], timestep: number, m: number[], L: number[], w: number[], f_c_static: number[], f_c_dynamic: number[], f_v: number[], FN: number[]) {
+
+    const TDDe = tddD;
+    const last_us = [0, this.last_u1, this.last_u2, this.last_u3, this.last_u4, this.last_u5, this.last_u6];
+    const TDe = tdD.map((tdd, i) => tdd - last_us[(i+1) * 2])
+    const Te = tD.map((td, i) => td - last_us[i*2 + 1]);
+
+    // Finish this by adding the part that should be subtracted
+    // You need current and desired speed and to compute the error!!!!!!!!!!!
+
+    this.integral[0] += Te[0] * timestep;
+    this.integral[1] += Te[1] * timestep;
+    this.integral[2] += Te[2] * timestep;
+
+    const INTEGRAL = this.integral;
+
+    const Kv = 4;
+    const Kp = 9;
+    const Ki = 0.1;
+
+    const c123 = cos(this.last_u1 + this.last_u3 + this.last_u5);
+    const c12 = cos(this.last_u1 + this.last_u3);
+    const c1 = cos(this.last_u1);
+
+    const G3 = 1/2*L[3]*m[3]*c123*g;
+    const G2 = G3 + L[2]*c12*g*(1/2*m[2]+m[3]);
+    const G1 = G2 + L[1]*c1*g*(1/2*m[1]+m[2]+m[3]);
+
+    const G = [G1, G2, G3];
+
+    const torques = Array(3).fill(0).map((_, i) => {
+      return TDDe[i] + Kv * TDe[i] + Kp * Te[i] + Ki * INTEGRAL[i] + G[i];
+    });
+    // console.log(TDDe[0] + Kv * TDe[0] + Kp * Te[0] + Ki * INTEGRAL[0], G[0]);
+    return torques;
+    
+  }
+
+  getPositionsByDynamicsRRR(g: number, torques: number[], timestep: number, m: number[], L: number[], w: number[], f_c_static: number[], f_c_dynamic: number[], f_v: number[], FN: number[]) {
+
+    // FN is 0 based
+    // L is 1 based
+    // m is 1 based
+    // w is 1 based
+    // frictions are 0 based
+    // torques are 1 based
+
+    const f1 = (u: number[]) => {
+      const du1dt = u[2];
+      return du1dt;
     }
 
-    const V_vector = nerdamer(`matrix([${V[0]}], [${V[1]}], [${V[2]}])`);
-    const G_vector = nerdamer(`matrix([${G[0]}], [${G[1]}], [${G[2]}])`);
-    const TDD_vector = nerdamer(`matrix([${tddZeroIsIgnored[1]}], [${tddZeroIsIgnored[2]}], [${tddZeroIsIgnored[3]}])`);
-    const MM_matrix = nerdamer(`matrix([${MM[0][0]}, ${MM[0][1]}, ${MM[0][2]}], [${MM[1][0]}, ${MM[1][1]}, ${MM[1][2]}], [${MM[2][0]}, ${MM[2][1]}, ${MM[2][2]}])`)
-    const res = nerdamer(`(${MM_matrix}*${TDD_vector})+${V_vector}+${G_vector}`, { 
-      theta_0: t[0].toString(), theta_1: t[1].toString(), theta_2: t[2].toString(),
-      theta_dot_1: tdZeroIsIgnored[1].toString(), theta_dot_2: tdZeroIsIgnored[2].toString(), theta_dot_3: tdZeroIsIgnored[3].toString(),
-      theta_dot_dot_1: tddZeroIsIgnored[1].toString(), theta_dot_dot_2: tddZeroIsIgnored[2].toString(), theta_dot_dot_3: tddZeroIsIgnored[3].toString(),
-      L1: L[1].toString(), L2: L[2].toString(), L3: L[3].toString(), m_1: m[1].toString(), m_2: m[2].toString(), m_3: m[3].toString(),
-      w_1: w[1].toString(), w_2: w[2].toString(), w_3: w[3].toString(), g: g.toString(),
-      eefX: FN[0].toString(), eefY: FN[1].toString(), eenZ: FN[2].toString()
-    }).evaluate();
-    // console.log("Automatic reshuffle");
-    // console.log(nerdamer(`matget(${res}, 0, 0)`).text('decimals'));
-    // console.log(nerdamer(`matget(${res}, 1, 0)`).text('decimals'));
-    // console.log(nerdamer(`matget(${res}, 2, 0)`).text('decimals'));
+    const f2 = (u: number[]) => {
+      return this.getRRRDynamicsVector(u, g, torques, timestep, m, L, w, f_c_static, f_c_dynamic, f_v, FN).toArray()[0] as number;
+    }
 
-    return vector([
-      parseFloat(nerdamer(`matget(${res}, 0, 0)`).text('decimals')),
-      parseFloat(nerdamer(`matget(${res}, 1, 0)`).text('decimals')),
-      parseFloat(nerdamer(`matget(${res}, 2, 0)`).text('decimals')),
-    ]);
+    const f3 = (u: number[]) => {
+      const du3dt = u[4];
+      return du3dt;
+    }
+
+    const f4 = (u: number[]) => {
+      return this.getRRRDynamicsVector(u, g, torques, timestep, m, L, w, f_c_static, f_c_dynamic, f_v, FN).toArray()[1] as number;
+    }
+
+    const f5 = (u: number[]) => {
+      const du5dt = u[6];
+      return du5dt;
+    }
+
+    const f6 = (u: number[]) => {
+      return this.getRRRDynamicsVector(u, g, torques, timestep, m, L, w, f_c_static, f_c_dynamic, f_v, FN).toArray()[2] as number;
+    }
+
+    const A = [0, 0, 2/9, 1/3, 3/4, 1, 5/6];
+    const B = [[], [], [0, 2/9], [0, 1/12, 1/4], [0, 69/128, -243/128, 135/64], [0, -17/12, 27/4, -27/5, 16/15], [0, 65/432, -5/16, 13/16, 4/27, 5/144]];
+    const C = [0, 1/9, 0, 9/20, 16/45, 1/12, 0];
+    const CH = [0, 47/450, 0, 12/25, 32/225, 1/30, 6/25];
+    const CT = [0, -1/150, 0, 3/100, -16/75, -1/20, 6/25];
+
+    // k, f and last_us are 1 based
+    // const k = Array(7).fill(Array(5).fill(0));
+    const k = [[], [0, 0, 0, 0, 0, 0 ,0], [0, 0, 0, 0, 0, 0 ,0], [0, 0, 0, 0, 0, 0 ,0], [0, 0, 0, 0, 0, 0 ,0], [0, 0, 0, 0, 0, 0 ,0], [0, 0, 0, 0, 0, 0 ,0]];
+    const f = [(u: number[]) => 0, f1, f2, f3, f4, f5, f6];
+    const last_us = [0, this.last_u1, this.last_u2, this.last_u3, this.last_u4, this.last_u5, this.last_u6];
+
+    for (var i = 1; i <= 6; i++) {
+      for (var j = 1; j <= 6; j++) {
+        k[i][j] = timestep * f[j](last_us.map((u,l) => {
+          return u + Array(i-1).fill(0).map((_,m) => B[i][m+1] * k[m+1][l]).reduce((a,b) => a+b, 0);
+        }));
+      }
+    }
     
+    // u_next is base 1
+    const u_next = Array(7).fill(0).map((_,i) => last_us[i] + CH[1]*k[1][i] + CH[2]*k[2][i] + CH[3]*k[3][i] + CH[4]*k[4][i] + CH[5]*k[5][i] + CH[6]*k[6][i]);
 
-    // const solvedN1 = nerdamer(n[0], { 
-    //   theta_0: t[0].toString(), theta_1: t[1].toString(), theta_2: t[2].toString(),
-    //   theta_dot_1: tdZeroIsIgnored[1].toString(), theta_dot_2: tdZeroIsIgnored[2].toString(), theta_dot_3: tdZeroIsIgnored[3].toString(),
-    //   theta_dot_dot_1: tddZeroIsIgnored[1].toString(), theta_dot_dot_2: tddZeroIsIgnored[2].toString(), theta_dot_dot_3: tddZeroIsIgnored[3].toString(),
-    //   L1: L[1].toString(), L2: L[2].toString(), L3: L[3].toString(), m_1: m[1].toString(), m_2: m[2].toString(), m_3: m[3].toString(),
-    //   w_1: w[1].toString(), w_2: w[2].toString(), w_3: w[3].toString(), g: g.toString(),
-    //   eefX: FN[0].toString(), eefY: FN[1].toString(), eenZ: FN[2].toString()
-    // });
-    // const solvedN2 = nerdamer(n[1], { 
-    //   theta_0: t[0].toString(), theta_1: t[1].toString(), theta_2: t[2].toString(),
-    //   theta_dot_1: tdZeroIsIgnored[1].toString(), theta_dot_2: tdZeroIsIgnored[2].toString(), theta_dot_3: tdZeroIsIgnored[3].toString(),
-    //   theta_dot_dot_1: tddZeroIsIgnored[1].toString(), theta_dot_dot_2: tddZeroIsIgnored[2].toString(), theta_dot_dot_3: tddZeroIsIgnored[3].toString(),
-    //   L1: L[1].toString(), L2: L[2].toString(), L3: L[3].toString(), m_1: m[1].toString(), m_2: m[2].toString(), m_3: m[3].toString(),
-    //   w_1: w[1].toString(), w_2: w[2].toString(), w_3: w[3].toString(), g: g.toString(),
-    //   eefX: FN[0].toString(), eefY: FN[1].toString(), eenZ: FN[2].toString()
-    // });
-    // const solvedN3 = nerdamer(n[2], { 
-    //   theta_0: t[0].toString(), theta_1: t[1].toString(), theta_2: t[2].toString(),
-    //   theta_dot_1: tdZeroIsIgnored[1].toString(), theta_dot_2: tdZeroIsIgnored[2].toString(), theta_dot_3: tdZeroIsIgnored[3].toString(),
-    //   theta_dot_dot_1: tddZeroIsIgnored[1].toString(), theta_dot_dot_2: tddZeroIsIgnored[2].toString(), theta_dot_dot_3: tddZeroIsIgnored[3].toString(),
-    //   L1: L[1].toString(), L2: L[2].toString(), L3: L[3].toString(), m_1: m[1].toString(), m_2: m[2].toString(), m_3: m[3].toString(),
-    //   w_1: w[1].toString(), w_2: w[2].toString(), w_3: w[3].toString(), g: g.toString(),
-    //   eefX: FN[0].toString(), eefY: FN[1].toString(), eenZ: FN[2].toString()
-    // });
+    this.last_u1 = u_next[1];
+    this.last_u2 = u_next[2];
+    this.last_u3 = u_next[3];
+    this.last_u4 = u_next[4];
+    this.last_u5 = u_next[5];
+    this.last_u6 = u_next[6];
 
-    // console.log("OG Form right after combining equations:");
-    // console.log(solvedN1.evaluate().text('decimals'));
-    // console.log(solvedN2.evaluate().text('decimals'));
-    // console.log(solvedN3.evaluate().text('decimals'));
+    return [u_next[1], u_next[3], u_next[5]];
 
-    // const model = nerdamer(`((((((-L1*theta_dot_1^2+g*sin(theta_0))*cos(theta_1)+(L1*theta_dot_dot_1+cos(theta_0)*g)*sin(theta_1)-(theta_dot_1+theta_dot_2)^2*L2)*cos(theta_2)+((L1*theta_dot_dot_1+cos(theta_0)*g)*cos(theta_1)+(theta_dot_dot_1+theta_dot_dot_2)*L2-(-L1*theta_dot_1^2+g*sin(theta_0))*sin(theta_1))*sin(theta_2)-0.5*(theta_dot_1+theta_dot_2+theta_dot_3)^2*L3)*m_3+eefX)*cos(theta_2)+((-L1*theta_dot_1^2+g*sin(theta_0))*cos(theta_1)+(L1*theta_dot_dot_1+cos(theta_0)*g)*sin(theta_1)-0.5*(theta_dot_1+theta_dot_2)^2*L2)*m_2-((((L1*theta_dot_dot_1+cos(theta_0)*g)*cos(theta_1)+(theta_dot_dot_1+theta_dot_dot_2)*L2-(-L1*theta_dot_1^2+g*sin(theta_0))*sin(theta_1))*cos(theta_2)-((-L1*theta_dot_1^2+g*sin(theta_0))*cos(theta_1)+(L1*theta_dot_dot_1+cos(theta_0)*g)*sin(theta_1)-(theta_dot_1+theta_dot_2)^2*L2)*sin(theta_2)+0.5*(theta_dot_dot_1+theta_dot_dot_2)*L3)*m_3+eefY)*sin(theta_2))*sin(theta_1)+(((((-L1*theta_dot_1^2+g*sin(theta_0))*cos(theta_1)+(L1*theta_dot_dot_1+cos(theta_0)*g)*sin(theta_1)-(theta_dot_1+theta_dot_2)^2*L2)*cos(theta_2)+((L1*theta_dot_dot_1+cos(theta_0)*g)*cos(theta_1)+(theta_dot_dot_1+theta_dot_dot_2)*L2-(-L1*theta_dot_1^2+g*sin(theta_0))*sin(theta_1))*sin(theta_2)-0.5*(theta_dot_1+theta_dot_2+theta_dot_3)^2*L3)*m_3+eefX)*sin(theta_2)+((((L1*theta_dot_dot_1+cos(theta_0)*g)*cos(theta_1)+(theta_dot_dot_1+theta_dot_dot_2)*L2-(-L1*theta_dot_1^2+g*sin(theta_0))*sin(theta_1))*cos(theta_2)-((-L1*theta_dot_1^2+g*sin(theta_0))*cos(theta_1)+(L1*theta_dot_dot_1+cos(theta_0)*g)*sin(theta_1)-(theta_dot_1+theta_dot_2)^2*L2)*sin(theta_2)+0.5*(theta_dot_dot_1+theta_dot_dot_2)*L3)*m_3+eefY)*cos(theta_2)+((L1*theta_dot_dot_1+cos(theta_0)*g)*cos(theta_1)-(-L1*theta_dot_1^2+g*sin(theta_0))*sin(theta_1)+0.5*L2*theta_dot_dot_1)*m_2)*cos(theta_1))*L1+(((((-L1*theta_dot_1^2+g*sin(theta_0))*cos(theta_1)+(L1*theta_dot_dot_1+cos(theta_0)*g)*sin(theta_1)-(theta_dot_1+theta_dot_2)^2*L2)*cos(theta_2)+((L1*theta_dot_dot_1+cos(theta_0)*g)*cos(theta_1)+(theta_dot_dot_1+theta_dot_dot_2)*L2-(-L1*theta_dot_1^2+g*sin(theta_0))*sin(theta_1))*sin(theta_2)-0.5*(theta_dot_1+theta_dot_2+theta_dot_3)^2*L3)*m_3+eefX)*sin(theta_2)+((((L1*theta_dot_dot_1+cos(theta_0)*g)*cos(theta_1)+(theta_dot_dot_1+theta_dot_dot_2)*L2-(-L1*theta_dot_1^2+g*sin(theta_0))*sin(theta_1))*cos(theta_2)-((-L1*theta_dot_1^2+g*sin(theta_0))*cos(theta_1)+(L1*theta_dot_dot_1+cos(theta_0)*g)*sin(theta_1)-(theta_dot_1+theta_dot_2)^2*L2)*sin(theta_2)+0.5*(theta_dot_dot_1+theta_dot_dot_2)*L3)*m_3+eefY)*cos(theta_2))*L2+0.08333333333333333*(0.25*L1^2+w_1^2)*m_1*theta_dot_dot_1+0.08333333333333333*(0.25*L2^2+w_2^2)*(theta_dot_dot_1+theta_dot_dot_2)*m_2+0.08333333333333333*(0.25*L3^2+w_3^2)*(theta_dot_dot_1+theta_dot_dot_2+theta_dot_dot_3)*m_3+0.5*(((L1*theta_dot_dot_1+cos(theta_0)*g)*cos(theta_1)+(theta_dot_dot_1+theta_dot_dot_2)*L2-(-L1*theta_dot_1^2+g*sin(theta_0))*sin(theta_1))*cos(theta_2)-((-L1*theta_dot_1^2+g*sin(theta_0))*cos(theta_1)+(L1*theta_dot_dot_1+cos(theta_0)*g)*sin(theta_1)-(theta_dot_1+theta_dot_2)^2*L2)*sin(theta_2)+0.5*(theta_dot_dot_1+theta_dot_dot_2)*L3)*L3*m_3+0.5*((L1*theta_dot_dot_1+cos(theta_0)*g)*cos(theta_1)-(-L1*theta_dot_1^2+g*sin(theta_0))*sin(theta_1)+0.5*L2*theta_dot_dot_1)*L2*m_2+0.5*L1*cos(theta_0)*g*m_1+L3*eefY+eenZ`)
+  }
 
-    // nerdamer.setConstant('eefX', 0);
-    // nerdamer.setConstant('eefY', 0);
-    // nerdamer.setConstant('eenZ', 0);
+  getPositionsByDynamicsRR(g: number, torques: number[], timestep: number, m: number[], L: number[], w: number[], f_c_static: number[], f_c_dynamic: number[], f_v: number[], FN: number[]) {
 
-    // console.log(model.evaluate().text());
+    // FN is 0 based
+    // L is 1 based
+    // m is 1 based
+    // w is 1 based
+    // frictions are 0 based
+    // torques are 1 based
+
+    const f1 = (u: number[]) => {
+      const du1dt = u[2];
+      return du1dt;
+    }
+    const f2 = (u: number[]) => {
+      const c1 = cos(u[1]);
+      const c2 = cos(u[3]);
+      const s1 = sin(u[1]);
+      const s2 = sin(u[3]);
+      const c12 = cos(u[1] + u[3]);
+
+      const G2 = 1/2*L[2]*m[2]*c12*g;
+      const V2 = FN[2]+1/2*L[2]*m[2]*s2*L[1]*(u[2]**2)+L[2]*FN[1];
+      const G1 = G2+L[1]*c1*g*(1/2*m[1]+m[2]);
+      const V1 = V2+L[1]*(s2*FN[0]+c2*FN[1])-1/2*L[1]*m[2]*s2*L[2]*((u[2]+u[4])**2);
+      const F2 = (Math.abs(u[4]) > 0.01 ? f_c_dynamic[1] : f_c_static[1])*sign(u[4])+f_v[1]*u[4];
+      const F1 = (Math.abs(u[2]) > 0.01 ? f_c_dynamic[0] : f_c_static[0])*sign(u[2])+f_v[0]*u[2];
+
+      const M21 = m[2]/12*((L[2]**2)+(w[2]**2))+1/2*L[2]*m[2]*(c2*L[1]+1/2*L[2]);
+      const M22 = m[2]/12*((L[2]**2)+(w[2]**2))+1/4*(L[2]**2)*m[2];
+      const M11 = M21+m[1]/12*((L[1]**2)+(w[1]**2))+1/4*(L[1]**2)*m[1]+L[1]*m[2]*(L[1]+1/2*c2*L[2]);
+      const M12 = M22+1/2*L[1]*L[2]*m[2]*c2;
+
+      const invM = inv(matrix([[M11, M12], [M21, M22]]));
+      const du2dt = multiply(invM, add(vector([torques[1], torques[2]]), vector([-(G1+V1), -(G2+V2)])));
+      return du2dt.toArray()[0] as number;
+
+      // const du2dt = (torques[1] - V1 - G1 - F1)*(M22/(M11*M22-M12*M21)) + (torques[2] - V2 - G2 - F2)*(-M12/(M11*M22-M12*M21));
+      // return du2dt;
+    }
+    const f3 = (u: number[]) => {
+      const du3dt = u[4];
+      return du3dt;
+    }
+    const f4 = (u: number[]) => {
+      const c1 = cos(u[1]);
+      const c2 = cos(u[3]);
+      const s1 = sin(u[1]);
+      const s2 = sin(u[3]);
+      const c12 = cos(u[1] + u[3]);
+
+      const G2 = 1/2*L[2]*m[2]*c12*g;
+      const V2 = FN[2]+1/2*L[2]*m[2]*s2*L[1]*(u[2]**2)+L[2]*FN[1];
+      const G1 = G2+L[1]*c1*g*(1/2*m[1]+m[2]);
+      const V1 = V2+L[1]*(s2*FN[0]+c2*FN[1])-1/2*L[1]*m[2]*s2*L[2]*((u[2]+u[4])**2);
+      const F2 = (Math.abs(u[4]) > 0.01 ? f_c_dynamic[1] : f_c_static[1])*sign(u[4])+f_v[1]*u[4];
+      const F1 = (Math.abs(u[2]) > 0.01 ? f_c_dynamic[0] : f_c_static[0])*sign(u[2])+f_v[0]*u[2];
+
+      const M21 = m[2]/12*((L[2]**2)+(w[2]**2))+1/2*L[2]*m[2]*(c2*L[1]+1/2*L[2]);
+      const M22 = m[2]/12*((L[2]**2)+(w[2]**2))+1/4*(L[2]**2)*m[2];
+      const M11 = M21+m[1]/12*((L[1]**2)+(w[1]**2))+1/4*(L[1]**2)*m[1]+L[1]*m[2]*(L[1]+1/2*c2*L[2]);
+      const M12 = M22+1/2*L[1]*L[2]*m[2]*c2;
+
+      const invM = inv(matrix([[M11, M12], [M21, M22]]));
+      const du2dt = multiply(invM, add(vector([torques[1], torques[2]]), vector([-(G1+V1), -(G2+V2)])));
+      return du2dt.toArray()[1] as number;
+
+      // const du4dt = (torques[1] - V1 - G1 - F1)*(-M21/(M11*M22-M12*M21)) + (torques[2] - V2 - G2 - F2)*(M11/(M11*M22-M12*M21));
+      // return du4dt;
+    }
+
+    const A = [0, 0, 2/9, 1/3, 3/4, 1, 5/6];
+    const B = [[], [], [0, 2/9], [0, 1/12, 1/4], [0, 69/128, -243/128, 135/64], [0, -17/12, 27/4, -27/5, 16/15], [0, 65/432, -5/16, 13/16, 4/27, 5/144]];
+    const C = [0, 1/9, 0, 9/20, 16/45, 1/12, 0];
+    const CH = [0, 47/450, 0, 12/25, 32/225, 1/30, 6/25];
+    const CT = [0, -1/150, 0, 3/100, -16/75, -1/20, 6/25];
+
+    // k, f and last_us are 1 based
+    // const k = Array(7).fill(Array(5).fill(0));
+    const k = [[], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]];
+    const f = [(u: number[]) => 0, f1, f2, f3, f4];
+    const last_us = [0, this.last_u1, this.last_u2, this.last_u3, this.last_u4];
+
+    // const k11 = timestep * f1([0, this.last_u1, this.last_u2, this.last_u3, this.last_u4]);
+    // const k12 = timestep * f2([0, this.last_u1, this.last_u2, this.last_u3, this.last_u4]);
+    // const k13 = timestep * f3([0, this.last_u1, this.last_u2, this.last_u3, this.last_u4]);
+    // const k14 = timestep * f4([0, this.last_u1, this.last_u2, this.last_u3, this.last_u4]);
+
+    // const k21 = timestep * f1([0, this.last_u1 + B[2][1] * k11, this.last_u2 + B[2][1] * k12, this.last_u3 + B[2][1] * k13, this.last_u4 + B[2][1] * k14]);
+    // const k22 = timestep * f2([0, this.last_u1 + B[2][1] * k11, this.last_u2 + B[2][1] * k12, this.last_u3 + B[2][1] * k13, this.last_u4 + B[2][1] * k14]);
+    // const k23 = timestep * f3([0, this.last_u1 + B[2][1] * k11, this.last_u2 + B[2][1] * k12, this.last_u3 + B[2][1] * k13, this.last_u4 + B[2][1] * k14]);
+    // const k24 = timestep * f4([0, this.last_u1 + B[2][1] * k11, this.last_u2 + B[2][1] * k12, this.last_u3 + B[2][1] * k13, this.last_u4 + B[2][1] * k14]);
+
+    for (var i = 1; i <= 6; i++) {
+      for (var j = 1; j <= 4; j++) {
+        k[i][j] = timestep * f[j](last_us.map((u,l) => {
+          return u + Array(i-1).fill(0).map((_,m) => B[i][m+1] * k[m+1][l]).reduce((a,b) => a+b, 0);
+        }));
+      }
+    }
+    
+    // u_next is base 1
+    const u_next = Array(5).fill(0).map((_,i) => last_us[i] + CH[1]*k[1][i] + CH[2]*k[2][i] + CH[3]*k[3][i] + CH[4]*k[4][i] + CH[5]*k[5][i] + CH[6]*k[6][i])
+
+    this.last_u1 = u_next[1];
+    this.last_u2 = u_next[2];
+    this.last_u3 = u_next[3];
+    this.last_u4 = u_next[4];
+
+    return [u_next[1], u_next[3]];
+
+  }
+
+  getPositionsByDynamicsR(g: number, torque: number, timestep: number, m1: number, L1: number, static_f: number, viscous_f: number) {
+
+    const f1 = (u1: number, u2: number) => {
+      const du1dt = u2;
+      return du1dt;
+    };
+
+    const f2 = (u1: number, u2: number) => {
+      // No friction
+      // const du2dt = torque + g * cos(u1)
+      const du2dt = (torque - L1 * m1 * cos(u1) * g) / ((L1 ** 2) * m1) -  sign(u2) * static_f - viscous_f * u2
+      return du2dt
+    }
+
+    // Runge kutta fehlberg method of solving ODEs - https://en.wikipedia.org/wiki/Runge–Kutta–Fehlberg_method
+
+    const A = [0, 0, 2/9, 1/3, 3/4, 1, 5/6];
+    const B = [[], [], [0, 2/9], [0, 1/12, 1/4], [0, 69/128, -243/128, 135/64], [0, -17/12, 27/4, -27/5, 16/15], [0, 65/432, -5/16, 13/16, 4/27, 5/144]];
+    const C = [0, 1/9, 0, 9/20, 16/45, 1/12, 0];
+    const CH = [0, 47/450, 0, 12/25, 32/225, 1/30, 6/25];
+    const CT = [0, -1/150, 0, 3/100, -16/75, -1/20, 6/25];
+
+    const k11 = timestep * f1(this.last_u1, this.last_u2);
+    const k12 = timestep * f2(this.last_u1, this.last_u2);
+
+    const k21 = timestep * f1(this.last_u1 + B[2][1] * k11, this.last_u2 + B[2][1] * k12)
+    const k22 = timestep * f2(this.last_u1 + B[2][1] * k11, this.last_u2 + B[2][1] * k12)
+
+    const k31 = timestep * f1(this.last_u1 + B[3][1] * k11 + B[3][2] * k21, this.last_u2 + B[3][1] * k12 + B[3][2] * k22)
+    const k32 = timestep * f2(this.last_u1 + B[3][1] * k11 + B[3][2] * k21, this.last_u2 + B[3][1] * k12 + B[3][2] * k22)
+
+    const k41 = timestep * f1(this.last_u1 + B[4][1] * k11 + B[4][2] * k21 + B[4][3] * k31, this.last_u2 + B[4][1] * k12 + B[4][2] * k22 + B[4][3] * k32)
+    const k42 = timestep * f2(this.last_u1 + B[4][1] * k11 + B[4][2] * k21 + B[4][3] * k31, this.last_u2 + B[4][1] * k12 + B[4][2] * k22 + B[4][3] * k32)
+
+    const k51 = timestep * f1(this.last_u1 + B[5][1] * k11 + B[5][2] * k21 + B[5][3] * k31 + B[5][4] * k41, this.last_u2 + B[5][1] * k12 + B[5][2] * k22 + B[5][3] * k32 + B[5][4] * k42)
+    const k52 = timestep * f2(this.last_u1 + B[5][1] * k11 + B[5][2] * k21 + B[5][3] * k31 + B[5][4] * k41, this.last_u2 + B[5][1] * k12 + B[5][2] * k22 + B[5][3] * k32 + B[5][4] * k42)
+
+    const k61 = timestep * f1(this.last_u1 + B[6][1] * k11 + B[6][2] * k21 + B[6][3] * k31 + B[6][4] * k41 + B[6][5] * k51, this.last_u2 + B[6][1] * k12 + B[6][2] * k22 + B[6][3] * k32 + B[6][4] * k42 + B[6][5] * k42)
+    const k62 = timestep * f2(this.last_u1 + B[6][1] * k11 + B[6][2] * k21 + B[6][3] * k31 + B[6][4] * k41 + B[6][5] * k51, this.last_u2 + B[6][1] * k12 + B[6][2] * k22 + B[6][3] * k32 + B[6][4] * k42 + B[6][5] * k42)
+
+    const u1_next = this.last_u1 + CH[1] * k11 + CH[2] * k21 + CH[3] * k31 + CH[4] * k41 + CH[5] * k51 + CH[6] * k61
+    const u2_next = this.last_u2 + CH[1] * k12 + CH[2] * k22 + CH[3] * k32 + CH[4] * k42 + CH[5] * k52 + CH[6] * k62
+
+    this.last_u1 = u1_next;
+    this.last_u2 = u2_next;
+
+    return u1_next;
 
   }
 

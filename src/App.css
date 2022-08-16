@@ -37,6 +37,67 @@
   }
 }
 
+body {
+  margin: 0;
+  padding: 0;
+}
+
 button {
-  font-size: calc(10px + 2vmin);
+  font-size: 1.5rem;
+  background-color: #e6e6e6;
+  border: 1px solid #c1c1c1;
+  border-radius: 8px;
+  padding: 12px;
+  transition: transform 0.2s, background-color 0.2s;
+  margin: 8px;
+}
+button:hover {
+  transform: scale(1.05);
+}
+button.selected {
+  transform: scale(1.03);
+  background-color: #A3C6F9;
+}
+button.dropDown {
+  padding: 8px;
+}
+
+#control-wrapper {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 640px;
+  z-index: 3;
+  margin: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  background-color: #f1f1f1;
+}
+
+#main-title {
+  font-size: 24px;
+  margin: 8px;
+  text-align: center;
+}
+.section-title {
+  font-size: 20px;
+  margin: 8px;
+  font-weight: 600;
+  margin-top: 22px;
+}
+
+h4 {
+  margin: 8px;
+  margin-top: 16px;
+}
+
+.label-wrap {
+  margin-left: 8px;
+}
+.input-label, .input-text {
+  margin: 8px 0px 6px 0px;
+}
+.input-label {
+  font-weight: 500;
+  font-size: 0.8rem;
 }

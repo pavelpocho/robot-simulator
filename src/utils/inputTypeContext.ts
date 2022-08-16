@@ -1,7 +1,7 @@
 import React, { useContext } from 'react';
 import { InputType } from '../components/ui/input-type';
 
-interface ContextType {
+export interface ContextType {
   inputType: InputType,
   setInputType: React.Dispatch<React.SetStateAction<InputType>>
 }
