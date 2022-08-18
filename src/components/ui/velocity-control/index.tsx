@@ -1,35 +1,49 @@
-import { useInputTypeContext } from "../../../utils/inputTypeContext";
+import { useInputTypeContext } from "../../../utils/contexts/InputTypeContext";
+import { useRobotContext } from "../../../utils/contexts/RobotContext";
 import { Input } from "../input";
 import { InputType } from "../input-type";
 
-type n = React.Dispatch<React.SetStateAction<number>>;
-type b = React.Dispatch<React.SetStateAction<boolean>>;
+interface Props {}
 
-interface Props {
-  angle1Dot: number, setAngle1Dot: n,
-  angle2Dot: number, setAngle2Dot: n,
-  angle3Dot: number, setAngle3Dot: n,
-  yDot: number, setYDot: n,
-  aDot: number, setADot: n,
-  xDot: number, setXDot: n,
-  setApplyJointVelocities: b, setApplyCartesianVelocities: b
-}
-
-export const VelocityControlUI: React.FC<Props> = ({
-  angle1Dot, angle2Dot, angle3Dot, setAngle1Dot, setAngle2Dot, setAngle3Dot,
-  xDot, yDot, aDot, setXDot, setYDot, setADot, setApplyJointVelocities, setApplyCartesianVelocities
-}) => {
+export const VelocityControlUI: React.FC<Props> = ({}) => {
   const c = useInputTypeContext();
+  const { robot, setRobot } = useRobotContext();
+
+  const cartLabels = [
+    'X Velocity',
+    'Y Velocity',
+    'Z Velocity',
+    'X Angle Vel',
+    'Y Angle Vel',
+    'Z Angle Vel'
+  ];
+
   return <>
     { c.inputType >= 2 && <div style={{ display: 'flex' }}>
-      <Input disabled={c.inputType != InputType.JointVel} label={'Joint 1 Vel'} value={angle1Dot} setValue={setAngle1Dot} />
-      <Input disabled={c.inputType != InputType.JointVel} label={'Joint 2 Vel'} value={angle2Dot} setValue={setAngle2Dot} />
-      <Input disabled={c.inputType != InputType.JointVel} label={'Joint 3 Vel'} value={angle3Dot} setValue={setAngle3Dot} />
+      { robot?.jointVelocities.map((jvx, i) => (
+        <Input 
+          key={i}
+          disabled={c.inputType != InputType.JointVel}
+          label={`Joint ${i+1} Velocity`}
+          value={jvx}
+          setValue={(v: number) => {
+            setRobot(r => { if (r) r.jointVelocities[i] = v; return r });
+          }}
+        />
+      )) }
     </div> }
     { c.inputType >= 2 && <div style={{ display: 'flex' }}>
-      <Input disabled={c.inputType != InputType.CartVel} label={'X 1 Vel'} value={xDot} setValue={(v: number) => {setXDot(v); setApplyCartesianVelocities(true)}} />
-      <Input disabled={c.inputType != InputType.CartVel} label={'Y 1 Vel'} value={yDot} setValue={(v: number) => {setYDot(v); setApplyCartesianVelocities(true)}} />
-      <Input disabled={c.inputType != InputType.CartVel} label={'A 1 Vel'} value={aDot} setValue={(v: number) => {setADot(v); setApplyCartesianVelocities(true)}} />
+      { robot?.cartesianEEVelocities.map((cvx, i) => (
+        <Input 
+          key={i}
+          disabled={c.inputType != InputType.InvKin}
+          label={cartLabels[i]}
+          value={cvx}
+          setValue={(v: number) => {
+            setRobot(r => { if (r) r.cartesianEEVelocities[i] = v; return r });
+          }}
+        />
+      ))}
     </div> }
   </>
 }

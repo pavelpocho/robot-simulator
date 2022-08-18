@@ -1,21 +1,12 @@
-import math, { atan2, MathNumericType, matrix, multiply, pi } from "mathjs";
-import nerdamer from "nerdamer";
-import React, { useCallback, useContext, useEffect } from "react";
+/*eslint-disable*/
+import math, { atan2, MathNumericType, multiply } from "mathjs";
+import { useEffect } from "react";
 import { useState } from "react";
-import { Context } from "urql";
-import { InputType } from "../components/ui/input-type";
-import TwoDRobot, { P_2D_Robot_Type, RPR_2D_Robot_Type, RRPR_2D_Robot_Type, RRR_2D_Robot_Type, RR_2D_Robot_Type, R_2D_Robot_Type } from "../robotics/dh-translator";
-import { useInputTypeContext } from "./inputTypeContext";
+import { InputType } from "../../components/ui/input-type";
+import TwoDRobot from "../../robotics/dh-translator";
+import { useInputTypeContext } from "../contexts/InputTypeContext";
+import vector from "../vector";
 import { useInterval } from "./useInterval";
-import vector from "./vector";
-
-interface AngleInfo {
-  doneSpeedPart: number,
-  i: number,
-  prevAcceleration: number,
-  secondPrevAcceleration: number,
-  newSpeed: number
-}
 
 export interface RobotLinkLengths {
   values: number[]
@@ -44,15 +35,6 @@ export interface JointFriction {
   viscousFriction: number
 }
 
-interface ParameterQueue {
-  angle1Positions: number[];
-  angle1Velocities: number[];
-  angle1Accelerations: number[];
-  angle2Positions: number[];
-  angle2Velocities: number[];
-  angle2Accelerations: number[];
-}
-
 export interface DHTableRow {
   a_imin1: number,
   alpha_imin1: number,
@@ -67,19 +49,7 @@ export interface DHTable {
 
 export const useKinematicInfo = () => {
 
-  // const robotType = RRR_2D_Robot_Type;
-  // const jointValues = [0, 0, 0];
-  // const linkLengths = [0, 100, 100, 50];
-
-  // const robotType = R_2D_Robot_Type;
-  // const jointValues = [0];
-  // const linkLengths = [0, 100];
-
-  // const robotType = RRR_2D_Robot_Type;
-  // const jointValues = [0, 0, 0];
-  // const linkLengths = [0, 100, 80, 40];
-
-  const [ robotType, setRobotType ] = useState<string>('RRR');
+  const [ robotType, setRobotType ] = useState<string>('RRRE');
   const [ linkLengths, setLinkLengths ] = useState<RobotLinkLengths>({ values: Array(robotType.length + 1).fill(100).map((a, i) => i == 0 ? 0 : a) });
   const [ applyRobotTypeChange, setApplyRobotTypeChange ] = useState<boolean>(true);
   const [ applyLinkLengthChange, setApplyLinkLengthChange ] = useState<boolean>(false);
@@ -144,6 +114,8 @@ export const useKinematicInfo = () => {
   const [ time, setTime ] = useState<number>(0);
   const [ lastSimTime, setLastSimTime ] = useState<number>(new Date().getTime());
 
+  const [ jacobianCode, setJacobianCode ] = useState<math.EvalFunction | null>(null);
+
   const c = useInputTypeContext();
 
   // Change robot using input DH parameters -----------------------------------
@@ -181,30 +153,31 @@ export const useKinematicInfo = () => {
       setLinkLengths(oll => ({ values: Array(robotType.length + 1).fill(100).map((a, i) => i == 0 ? 0 : i < oll.values.length ? oll.values[i] : a) }));
       setJointPositions(ojp => (Array(robotType.length).fill(0).map((a, i) => i < ojp.length ? ojp[i] : a)));
       setApplyFwdKin(true);
+      setJacobianCode(robot?.getCompiledJacobian(robotType) ?? null);
     }
   }, [ robotType, applyRobotTypeChange ]);
 
   // Robot type updates -------------------------------------------------------
 
-  useEffect(() => {
-    if (applyLinkLengthChange) {
-      setRobot(new TwoDRobot({
-        robotType,
-        jointPositions: jointPositions.map(jp => jp / 180 * Math.PI),
-        linkLengths: linkLengths.values
-      }));
-      robot?.setJointValues(createJointValues(...jointPositions));
-      let kinem = [...Array(robotType.length + 1).keys()].map(i => robot?.forwardKinematics(i));
-      setKinematics(kinem);
-      setX((kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
-      setY((kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
-      setA(atan2(
-        (kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0,
-        (kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0
-      ) / Math.PI * 180);
-      setApplyLinkLengthChange(false);
-    }
-  }, [ linkLengths, applyLinkLengthChange ]);
+  // useEffect(() => {
+  //   if (applyLinkLengthChange) {
+  //     setRobot(new TwoDRobot({
+  //       robotType,
+  //       jointPositions: jointPositions.map(jp => jp / 180 * Math.PI),
+  //       linkLengths: linkLengths.values
+  //     }));
+  //     robot?.setJointValues(createJointValues(...jointPositions));
+  //     let kinem = [...Array(robotType.length + 1).keys()].map(i => robot?.forwardKinematics(i));
+  //     setKinematics(kinem);
+  //     setX((kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
+  //     setY((kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
+  //     setA(atan2(
+  //       (kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0,
+  //       (kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0
+  //     ) / Math.PI * 180);
+  //     setApplyLinkLengthChange(false);
+  //   }
+  // }, [ linkLengths, applyLinkLengthChange ]);
 
   // Forward kinematics -------------------------------------------------------
 
@@ -242,20 +215,20 @@ export const useKinematicInfo = () => {
 
   // Inverse kinematics -------------------------------------------------------
 
-  useEffect(() => {
-    if (c.inputType == InputType.InvKin) {
-      if (applyInvKin) {
-        if (robot?.robotTypeName === 'RRR') {
-          let angles = robot?.inverseKinematicsRRR(x, y, a / 180 * Math.PI);
-          robot?.setJointValues(createJointValues(...angles.map(a => a / Math.PI * 180)));
-          let kinem = [...Array(robotType.length + 1).keys()].map(i => robot?.forwardKinematics(i));
-          setKinematics(kinem);
-          setJointPositions(angles.map(a => a / Math.PI * 180) ?? Array(robotType.length).fill(0));
-        }
-      }
-    }
-    setApplyInvKin(false);
-  }, [applyInvKin]);
+  // useEffect(() => {
+  //   if (c.inputType == InputType.InvKin) {
+  //     if (applyInvKin) {
+  //       if (robot?.robotTypeName === 'RRR') {
+  //         let angles = robot?.inverseKinematicsRRR(x, y, a / 180 * Math.PI);
+  //         robot?.setJointValues(createJointValues(...angles.map(a => a / Math.PI * 180)));
+  //         let kinem = [...Array(robotType.length + 1).keys()].map(i => robot?.forwardKinematics(i));
+  //         setKinematics(kinem);
+  //         setJointPositions(angles.map(a => a / Math.PI * 180) ?? Array(robotType.length).fill(0));
+  //       }
+  //     }
+  //   }
+  //   setApplyInvKin(false);
+  // }, [applyInvKin]);
 
   // Velocities ---------------------------------------------------------------
 
@@ -264,7 +237,7 @@ export const useKinematicInfo = () => {
       if (angle1Dot != 0) setAngle1(a => a + angle1Dot * 0.016);
       if (angle2Dot != 0) setAngle2(a => a + angle2Dot * 0.016);
       if (angle3Dot != 0) setAngle3(a => a + angle3Dot * 0.016);
-      robot?.setJointValues(createJointValues(angle1, angle2, angle3));
+      // robot?.setJointValues(createJointValues(angle1, angle2, angle3));
       const jacobian = robot?.getJacobian([angle1 / 180 * Math.PI, angle2 / 180 * Math.PI, angle3 / 180 * Math.PI], linkLengths.values);
       // const genJacobian = robot?.getGeneralJacobian([angle1 / 180 * Math.PI, angle2 / 180 * Math.PI, angle3 / 180 * Math.PI], linkLengths);
       // console.log("Forward");
@@ -301,7 +274,7 @@ export const useKinematicInfo = () => {
         if (angle1Dot != 0) setAngle1(a => a + angle1Dot * 0.016);
         if (angle2Dot != 0) setAngle2(a => a + angle2Dot * 0.016);
         if (angle3Dot != 0) setAngle3(a => a + angle3Dot * 0.016);
-        robot?.setJointValues(createJointValues(angle1, angle2, angle3));
+        // robot?.setJointValues(createJointValues(angle1, angle2, angle3));
         let kinem = [...Array(robotType.length + 1).keys()].map(i => robot?.forwardKinematics(i));
         setKinematics(kinem);
         setX((kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
@@ -319,133 +292,89 @@ export const useKinematicInfo = () => {
 
   // Trajectory generation
 
-  useEffect(() => {
-    if (c.inputType == InputType.Trajectory && trajectoryInputType == TrajectoryInputType.JointSpace && runCubicTrajectory) {
-      setRunCubicTrajectory(false);
-      const jointTrajectories = [trajectoryJoint1Values, trajectoryJoint2Values, trajectoryJoint3Values];
-      const totalTime = 1;
-      setCubicAObjects(c => {
-        for (var i = 0; i < jointTrajectories.length; i++) {
-          const jt = [trajectoryJoint1Values, trajectoryJoint2Values, trajectoryJoint3Values];
-          c.push({
-            a_0: jt[i][0],
-            a_1: 0,
-            a_2: 3 / (totalTime**2) * (jt[i][1] - jt[i][0]) - 2 / (totalTime) * 0 - 1 / totalTime * 0,
-            a_3: -2 / (totalTime**3) * (jt[i][1] - jt[i][0]) + 1 / (totalTime**2) * (0 + 0)
-          });
-        }
-        return c;
-      });
-      setTime(0);
-      setCubicTrajectoryRunning(true);
-    }
-    else if (c.inputType == InputType.Trajectory && trajectoryInputType == TrajectoryInputType.CartesianSpace && runCubicTrajectory) {
-      console.log("Do cubic trajectory in cartesian space");
-    }
-  }, [runCubicTrajectory]);
+  // useEffect(() => {
+  //   if (c.inputType == InputType.Trajectory && trajectoryInputType == TrajectoryInputType.JointSpace && runCubicTrajectory) {
+  //     setRunCubicTrajectory(false);
+  //     const jointTrajectories = [trajectoryJoint1Values, trajectoryJoint2Values, trajectoryJoint3Values];
+  //     const totalTime = 1;
+  //     setCubicAObjects(c => {
+  //       for (var i = 0; i < jointTrajectories.length; i++) {
+  //         const jt = [trajectoryJoint1Values, trajectoryJoint2Values, trajectoryJoint3Values];
+  //         c.push({
+  //           a_0: jt[i][0],
+  //           a_1: 0,
+  //           a_2: 3 / (totalTime**2) * (jt[i][1] - jt[i][0]) - 2 / (totalTime) * 0 - 1 / totalTime * 0,
+  //           a_3: -2 / (totalTime**3) * (jt[i][1] - jt[i][0]) + 1 / (totalTime**2) * (0 + 0)
+  //         });
+  //       }
+  //       return c;
+  //     });
+  //     setTime(0);
+  //     setCubicTrajectoryRunning(true);
+  //   }
+  //   else if (c.inputType == InputType.Trajectory && trajectoryInputType == TrajectoryInputType.CartesianSpace && runCubicTrajectory) {
+  //     console.log("Do cubic trajectory in cartesian space");
+  //   }
+  // }, [runCubicTrajectory]);
 
-  useEffect(() => {
-    if (c.inputType == InputType.Trajectory && trajectoryInputType == TrajectoryInputType.JointSpace && runQuinticTrajectory) {
-      setRunQuinticTrajectory(false);
-      const jointTrajectories = [trajectoryJoint1Values, trajectoryJoint2Values, trajectoryJoint3Values];
-      const totalTime = 1;
-      setQuinticAObjects(c => {
-        for (var i = 0; i < jointTrajectories.length; i++) {
-          const jt = [trajectoryJoint1Values, trajectoryJoint2Values, trajectoryJoint3Values];
-          c.push({
-            a_0: jt[i][0],
-            a_1: 0,
-            a_2: 0,
-            a_3: (20*jt[i][1]-20*jt[i][0]-(0+0)*totalTime-(3*0-0)*(totalTime**2)) / (2*(totalTime**3)),
-            a_4: (30*jt[i][0]-30*jt[i][1]+0) / (2*(totalTime**4)),
-            a_5: (12*jt[i][1]-12*jt[i][0]) / (2*(totalTime**5))
-          });
-        }
-        return c;
-      });
-      setTime(0);
-      setQuinticTrajectoryRunning(true);
-    }
-    else if (c.inputType == InputType.Trajectory && trajectoryInputType == TrajectoryInputType.CartesianSpace && runQuinticTrajectory) {
-      console.log("Do quintic trajectory in cartesian space");
-    }
-  }, [runQuinticTrajectory]);
-
-  useInterval(() => {
-    if (cubicTrajectoryRunning) {
-      setTime(t => t + 0.016);
-      for (var i = 0; i < 3; i++) {
-        const a = cubicAObjects[i];
-        const set = i == 0 ? setAngle1 : i == 1 ? setAngle2 : setAngle3;
-        set(a.a_0 + a.a_1 * time + a.a_2 * (time**2) + a.a_3 * (time**3));
-      }
-      if (time > 1) setCubicTrajectoryRunning(false);
-    }
-    else if (quinticTrajectoryRunning) {
-      setTime(t => t + 0.016);
-      for (var i = 0; i < 3; i++) {
-        const a = quinticAObjects[i];
-        const set = i == 0 ? setAngle1 : i == 1 ? setAngle2 : setAngle3;
-        set(a.a_0 + a.a_1 * time + a.a_2 * (time**2) + a.a_3 * (time**3) + a.a_4 * (time**4) + a.a_5 * (time ** 5));
-      }
-      if (time > 1) setQuinticTrajectoryRunning(false);
-    }
-    if (cubicTrajectoryRunning || quinticTrajectoryRunning) {
-      robot?.setJointValues(createJointValues(angle1, angle2, angle3));
-      let kinem = [...Array(robotType.length + 1).keys()].map(i => robot?.forwardKinematics(i));
-      setKinematics(kinem);
-      setX((kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
-      setY((kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
-      setA(atan2(
-        (kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0,
-        (kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0
-      ) / Math.PI * 180);
-    }
-  }, 16);
-
-  // Dynamics R -----------------------------------------------------------------
+  // useEffect(() => {
+  //   if (c.inputType == InputType.Trajectory && trajectoryInputType == TrajectoryInputType.JointSpace && runQuinticTrajectory) {
+  //     setRunQuinticTrajectory(false);
+  //     const jointTrajectories = [trajectoryJoint1Values, trajectoryJoint2Values, trajectoryJoint3Values];
+  //     const totalTime = 1;
+  //     setQuinticAObjects(c => {
+  //       for (var i = 0; i < jointTrajectories.length; i++) {
+  //         const jt = [trajectoryJoint1Values, trajectoryJoint2Values, trajectoryJoint3Values];
+  //         c.push({
+  //           a_0: jt[i][0],
+  //           a_1: 0,
+  //           a_2: 0,
+  //           a_3: (20*jt[i][1]-20*jt[i][0]-(0+0)*totalTime-(3*0-0)*(totalTime**2)) / (2*(totalTime**3)),
+  //           a_4: (30*jt[i][0]-30*jt[i][1]+0) / (2*(totalTime**4)),
+  //           a_5: (12*jt[i][1]-12*jt[i][0]) / (2*(totalTime**5))
+  //         });
+  //       }
+  //       return c;
+  //     });
+  //     setTime(0);
+  //     setQuinticTrajectoryRunning(true);
+  //   }
+  //   else if (c.inputType == InputType.Trajectory && trajectoryInputType == TrajectoryInputType.CartesianSpace && runQuinticTrajectory) {
+  //     console.log("Do quintic trajectory in cartesian space");
+  //   }
+  // }, [runQuinticTrajectory]);
 
   // useInterval(() => {
-  //   if (c.inputType == InputType.Torques) {
-  //     const position = robot?.getPositionsByDynamicsR(-9.81, torques[0], 0.016, 2, 1, 0.4, 0.6);
-  //     if (position) {
-  //       setAngle1(position);
-  //       robot?.setJointValues(createJointValues(angle1 / Math.PI * 180/*, angle2, angle3*/));
-  //       let kinem = [...Array(jointValues.length + 1).keys()].map(i => robot?.forwardKinematics(i));
-  //       setKinematics(kinem);
-  //       setX((kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
-  //       setY((kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
-  //       setA(atan2(
-  //         (kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0,
-  //         (kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0
-  //       ) / Math.PI * 180);
+  //   if (cubicTrajectoryRunning) {
+  //     setTime(t => t + 0.016);
+  //     for (var i = 0; i < 3; i++) {
+  //       const a = cubicAObjects[i];
+  //       const set = i == 0 ? setAngle1 : i == 1 ? setAngle2 : setAngle3;
+  //       set(a.a_0 + a.a_1 * time + a.a_2 * (time**2) + a.a_3 * (time**3));
   //     }
+  //     if (time > 1) setCubicTrajectoryRunning(false);
+  //   }
+  //   else if (quinticTrajectoryRunning) {
+  //     setTime(t => t + 0.016);
+  //     for (var i = 0; i < 3; i++) {
+  //       const a = quinticAObjects[i];
+  //       const set = i == 0 ? setAngle1 : i == 1 ? setAngle2 : setAngle3;
+  //       set(a.a_0 + a.a_1 * time + a.a_2 * (time**2) + a.a_3 * (time**3) + a.a_4 * (time**4) + a.a_5 * (time ** 5));
+  //     }
+  //     if (time > 1) setQuinticTrajectoryRunning(false);
+  //   }
+  //   if (cubicTrajectoryRunning || quinticTrajectoryRunning) {
+  //     robot?.setJointValues(createJointValues(angle1, angle2, angle3));
+  //     let kinem = [...Array(robotType.length + 1).keys()].map(i => robot?.forwardKinematics(i));
+  //     setKinematics(kinem);
+  //     setX((kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
+  //     setY((kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
+  //     setA(atan2(
+  //       (kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0,
+  //       (kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0
+  //     ) / Math.PI * 180);
   //   }
   // }, 16);
-
-  // Dynamics RR -----------------------------------------------------------------
-
-  useInterval(() => {
-    if (c.inputType == InputType.Torques) {
-      // const diff = new Date().getTime() - lastSimTime;
-      // console.log(diff * 0.001);
-      const positions = robot?.getPositionsByDynamicsRR(gravity, [0, torques[0], torques[1]], 0.016, [0, linkMasses[0], linkMasses[1]], [0, 1, 1], [0, linkWidths[0], linkWidths[1]], jointFrictions.map(jf => jf.staticFriction), jointFrictions.map(jf => jf.dynamicFriction), jointFrictions.map(jf => jf.viscousFriction), eeForces);
-      setLastSimTime(new Date().getTime());
-      if (positions && positions.length == 2) {
-        setAngle1(positions[0]);
-        setAngle2(positions[1]);
-        robot?.setJointValues(createJointValues(angle1 / Math.PI * 180, angle2 / Math.PI * 180/*, angle3*/));
-        let kinem = [...Array(robotType.length + 1).keys()].map(i => robot?.forwardKinematics(i));
-        setKinematics(kinem);
-        setX((kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
-        setY((kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
-        setA(atan2(
-          (kinem[kinem.length - 1]?.toArray()[1] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0,
-          (kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0])[0] as number | null | undefined ?? 0
-        ) / Math.PI * 180);
-      }
-    }
-  }, 16);
 
   // Dynamics RRR -----------------------------------------------------------------
 
@@ -461,7 +390,7 @@ export const useKinematicInfo = () => {
           setAngle1(positions[0]);
           setAngle2(positions[1]);
           setAngle3(positions[2]);
-          robot?.setJointValues(createJointValues(angle1 / Math.PI * 180, angle2 / Math.PI * 180, angle3 / Math.PI * 180));
+          // robot?.setJointValues(createJointValues(angle1 / Math.PI * 180, angle2 / Math.PI * 180, angle3 / Math.PI * 180));
           let kinem = [...Array(robotType.length + 1).keys()].map(i => robot?.forwardKinematics(i));
           setKinematics(kinem);
           setX((kinem[kinem.length - 1]?.toArray()[0] as MathNumericType[] | undefined ?? [0,0,0,0])[3] as (number | null | undefined) ?? 0);
@@ -513,7 +442,8 @@ export const useKinematicInfo = () => {
     applyLinkLengthChange, setApplyLinkLengthChange,
     applyRobotTypeChange, setApplyRobotTypeChange,
     dhParameters, setDhParameters,
-    applyDhChange, setApplyDhChange
+    applyDhChange, setApplyDhChange,
+    jacobianCode
   }
 
 

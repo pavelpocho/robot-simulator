@@ -1,7 +1,8 @@
-import math, { cos, sin, matrix, multiply, pow, atan2, Matrix, transpose, add, cross, sum, inv, sign, evaluate, compile } from "mathjs";
+/*eslint-disable*/
+import math, { cos, sin, matrix, multiply, pow, atan2, Matrix, transpose, add, cross, sum, inv, sign, evaluate, compile, fraction } from "mathjs";
 import vector from "../utils/vector";
 import nerdamer from 'nerdamer';
-import { DHTableRow } from "../utils/useKinematicInfo";
+import { DHTableRow } from "../utils/hooks/useKinematicInfo";
 
 interface TwoDRobotInitData {
   robotType: string,
@@ -12,31 +13,6 @@ interface TwoDRobotInitData {
 interface RobotType {
   name: string,
   jointTypes: ('P'|'R')[],
-}
-
-export const RPR_2D_Robot_Type: RobotType = {
-  name: "RPR",
-  jointTypes: ["R", "P", "R"]
-}
-export const RRR_2D_Robot_Type: RobotType = {
-  name: "RRR",
-  jointTypes: ["R", "R", "R"]
-}
-export const RR_2D_Robot_Type: RobotType = {
-  name: "RR",
-  jointTypes: ["R", "R"]
-}
-export const R_2D_Robot_Type: RobotType = {
-  name: "R",
-  jointTypes: ["R"]
-}
-export const RRPR_2D_Robot_Type: RobotType = {
-  name: "RRPR",
-  jointTypes: ["R", "R", "P", "R"]
-}
-export const P_2D_Robot_Type: RobotType = {
-  name: "P",
-  jointTypes: ["P"]
 }
 
 interface LinkParametersInitData {
@@ -109,6 +85,45 @@ class LinkParameters {
     ]);
   }
 
+  getSymbolicRotationMatrix() {
+    const i = this.i;
+    return nerdamer(`
+      matrix(
+        [cos(theta_${i}), -sin(theta_${i}), 0],
+        [sin(theta_${i})*cos(alpha_${i-1}), cos(theta_${i})*cos(alpha_${i-1}), -sin(alpha_${i-1})],
+        [sin(theta_${i})*sin(alpha_${i-1}), cos(theta_${i})*sin(alpha_${i-1}), cos(alpha_${i-1})]
+      )
+    `);
+  }
+
+  getSymbolicDoubledRotationMatrix() {
+    const i = this.i;
+    return nerdamer(`
+      matrix(
+        [cos(theta_${i}), -sin(theta_${i}), 0, 0, 0, 0],
+        [sin(theta_${i})*cos(alpha_${i-1}), cos(theta_${i})*cos(alpha_${i-1}), -sin(alpha_${i-1}), 0, 0, 0],
+        [sin(theta_${i})*sin(alpha_${i-1}), cos(theta_${i})*sin(alpha_${i-1}), cos(alpha_${i-1}), 0, 0, 0],
+        [0, 0, 0, cos(theta_${i}), -sin(theta_${i}), 0],
+        [0, 0, 0, sin(theta_${i})*cos(alpha_${i-1}), cos(theta_${i})*cos(alpha_${i-1}), -sin(alpha_${i-1})],
+        [0, 0, 0, sin(theta_${i})*sin(alpha_${i-1}), cos(theta_${i})*sin(alpha_${i-1}), cos(alpha_${i-1})]
+      )
+    `);
+  }
+
+  getSymbolicTransformationMatrix() {
+    const i = this.i;
+    return nerdamer(`
+      matrix([cos(theta_${i}), -sin(theta_${i}), 0, a_${i-1}], [sin(theta_${i})*cos(alpha_${i-1}), cos(theta_${i})*cos(alpha_${i-1}), -sin(alpha_${i-1}), -sin(alpha_${i-1})*d_${i}], [sin(theta_${i})*sin(alpha_${i-1}), cos(theta_${i})*sin(alpha_${i-1}), cos(alpha_${i-1}), cos(alpha_${i-1})*d_${i}], [0, 0, 0, 1])
+    `);
+  }
+
+  getSymbolicTranslationVector() {
+    const i = this.i;
+    return nerdamer(`
+      [a_${i-1}, -sin(alpha_${i-1})*d_${i}, cos(alpha_${i-1})*d_${i}]
+    `);
+  }
+
 }
 
 export default class TwoDRobot {
@@ -134,15 +149,16 @@ export default class TwoDRobot {
     this.numOfJoints = robotType.length;
     this.linkParametersArray = [];
     this.jointValues = [];
-    this.setJointValues(jointValues);
   }
-
-  getJointValues() {
-    return this.jointValues;
-  }
-
-  getLinkLengths() {
-    return this.linkLengths;
+  
+  setDhParameters(dhTable: DHTableRow[], jointPositions: number[], robotType: string) {
+    const linkParametersArray: LinkParameters[] = [];
+    dhTable.forEach((dhRow, i) => {
+      linkParametersArray.push(new LinkParameters({
+        i: i + 1, a_i_minus_1: dhRow.a_imin1, alpha_i_minus_1: dhRow.alpha_imin1 / 180 * Math.PI, d_i: robotType[i] === 'P' ? jointPositions[i] : dhRow.d_i, theta_i: robotType[i] === 'R' ? jointPositions[i] / 180 * Math.PI : dhRow.theta_i / 180 * Math.PI
+      }));
+    });
+    this.linkParametersArray = linkParametersArray;
   }
 
   getJacobian(joint_angles: number[], L: number[]) {
@@ -155,73 +171,21 @@ export default class TwoDRobot {
     const j_12 = L[2]*sin(joint_angles[2]);
     const j_22 = L[2]*cos(joint_angles[2])+L[3];
     const j_23 = L[3];
-    if (this.robotTypeName === 'RRR') {
+    // if (this.robotTypeName === 'RRR') {
       return matrix([
         [c_123*j_11-s_123*j_21, c_123*j_12-s_123*j_22, -s_123*j_23],
         [s_123*j_11+c_123*j_21, s_123*j_12+c_123*j_22, c_123*j_23],
         [1,1,1]
       ]);
-    }
-    else {
-      throw Error("Not RRR, can't get Jacobian");
-    }
+    // }
+    // else {
+    //   throw Error("Not RRR, can't get Jacobian");
+    // }
   }
 
   getInverseJacobian(joint_angles: number[], L: number[]) {
     const jacobian = this.getJacobian(joint_angles, L);
     return inv(jacobian);
-  }
-
-  setDhParameters(dhTable: DHTableRow[], jointPositions: number[], robotType: string) {
-    const linkParametersArray: LinkParameters[] = [];
-    dhTable.forEach((dhRow, i) => {
-      linkParametersArray.push(new LinkParameters({
-        i, a_i_minus_1: dhRow.a_imin1, alpha_i_minus_1: dhRow.alpha_imin1 / 180 * Math.PI, d_i: robotType[i] === 'P' ? jointPositions[i] : dhRow.d_i, theta_i: robotType[i] === 'R' ? jointPositions[i] / 180 * Math.PI : dhRow.theta_i / 180 * Math.PI
-      }));
-    });
-    this.linkParametersArray = linkParametersArray;
-  }
-
-  setJointValues(jointValues: number[]) {
-    this.jointValues = jointValues;
-    const linkParametersArray: LinkParameters[] = [];
-    for (let i = 0; i < jointValues.length; i++) {
-      // Nope, this is complicated af
-      if (this.robotTypeName[i] === 'R') {
-        if (this.robotTypeName[i - 1] === 'R') {
-          linkParametersArray.push(new LinkParameters({
-            i, a_i_minus_1: this.linkLengths[i], alpha_i_minus_1: 0, d_i: 0, theta_i: jointValues[i]
-          }));
-        }
-        else {
-          linkParametersArray.push(new LinkParameters({
-            i, a_i_minus_1: 0, alpha_i_minus_1: - Math.PI / 2, d_i: 0, theta_i: jointValues[i]
-          }));
-        }
-      }
-      else if (this.robotTypeName[i] === 'P') {
-        if (this.robotTypeName[i - 1] === 'R') {
-          linkParametersArray.push(new LinkParameters({
-            i, a_i_minus_1: 0, alpha_i_minus_1: Math.PI / 2, d_i: jointValues[i], theta_i: 0
-          }));
-        }
-        else {
-          linkParametersArray.push(new LinkParameters({
-            i, a_i_minus_1: this.linkLengths[i], alpha_i_minus_1: 0, d_i: jointValues[i], theta_i: 0
-          }));
-        }
-      }
-    }
-    linkParametersArray.push(new LinkParameters({
-      i: jointValues.length, a_i_minus_1: this.linkLengths[jointValues.length - 1 + 1], alpha_i_minus_1: 0, d_i: 0, theta_i: 0
-    }))
-    this.linkParametersArray = linkParametersArray;
-    // this.linkParametersArray = [...Array(this.numOfJoints).keys()].map(i => new LinkParameters({
-    //   a_i_minus_1: this.jointTypes[i] == 'P' ? 0 : this.linkLengths[i],
-    //   alpha_i_minus_1: this.jointTypes[i] == 'P' ? Math.PI / 2 : 0,
-    //   d_i: this.jointTypes[i] == 'P' ? jointValues[i] : 0,
-    //   theta_i: this.jointTypes[i] == 'R' ? jointValues[i] : 0
-    // }));
   }
 
   forwardKinematics(toLink: number) {
@@ -236,28 +200,6 @@ export default class TwoDRobot {
       [0, 0, 0, 1],
     ]));
     return totalTransform;
-  }
-
-  inverseKinematicsRRR(x: number, y: number, a: number) {
-    // This is the offset in the fwd kin
-    let y_corrected = y;
-    let ee_dist_x = this.linkLengths[3] * cos(a);
-    let ee_dist_y = this.linkLengths[3] * sin(a);
-    let xT = x - ee_dist_x;
-    let yT = y_corrected - ee_dist_y;
-
-    let c_theta_2 = (Math.pow(xT, 2) + Math.pow(yT, 2) - Math.pow(this.linkLengths[1], 2) - Math.pow(this.linkLengths[2], 2)) / (2 * this.linkLengths[1] * this.linkLengths[2]);
-    let s_theta_2 = Math.sqrt(1-Math.pow(c_theta_2, 2));
-
-    let t_2 = atan2(s_theta_2, c_theta_2);
-    
-    let k_1 = this.linkLengths[1] + this.linkLengths[2]*c_theta_2;
-    let k_2 = this.linkLengths[2]*s_theta_2;
-
-    let t_1 = atan2(yT, xT) - atan2(k_2, k_1);
-    let t_3 = a - t_1 - t_2;
-    
-    return [t_1, t_2, t_3];
   }
 
   forwardKinematicsOneLink(toLink: number) {
@@ -278,8 +220,132 @@ export default class TwoDRobot {
     return transformMatrices[0];
   }
 
-  getCompiledJacobian(robotType: string, joint_angles: number[]) {
+  getCompiledJacobian(robotType: string) {
+    const rotationMatrices = this.linkParametersArray.map(l => l.getSymbolicRotationMatrix());
+    rotationMatrices.forEach(rotMat => {
+      console.log(rotMat.text('fractions'));
+    });
+    const transposedRotationMatrices = rotationMatrices.map(r => nerdamer(`transpose(${r.text('fractions')})`));
+    transposedRotationMatrices.forEach(rotMat => {
+      console.log(rotMat.text('fractions'));
+    });
+    const translationVectors = this.linkParametersArray.map(l => l.getSymbolicTranslationVector());
+
+    // The last rotationMatrix goes to end effector, which is not a joint and thus isn't represented in the robotType
+    // Nope, there is an 'E' in the place of an end effector, so they are the same length!
+    if (robotType.length > rotationMatrices.length) {
+      throw "Incorrect robot type set";
+    }
+
+    // Here rotationMatrices[0] corresponds to DH row 1, aka. representing frame 1 in frame 0 (0 on top, 1 on bottom, aka. R01)
+    // Here transposedRotationMatrices[0] corresponds to inverse of DH row 1, aka. representing frame 0 in frame 1 (1 on top, 0 on bottom, aka. R10)
+    // So on... until:
+    // rotationMatrices[i] is max, where i is number of joints and rotationMatrices[i] points to the End effector
+    // So:
+
+    for (var i = 0; i < rotationMatrices.length; i++) {
+      nerdamer.setVar(`R${i}${i+1}`, rotationMatrices[i].text('fractions'));
+      nerdamer.setVar(`R${i+1}${i}`, transposedRotationMatrices[i].text('fractions'));
+    }
+
+    nerdamer.setVar('omega_0', 'matrix([0], [0], [0])');
+    nerdamer.setVar('v_0', 'matrix([0], [0], [0])');
+
+    for (var i = 1; i <= robotType.length; i++) {
+      console.log("Loop", i);
+      if (robotType[i-1] === 'R') {
+        nerdamer.setVar(`omega_${i}`, `(R${i}${i-1}*omega_${i-1})+(matrix([0],[0],[theta_dot_${i}]))`);
+        const vectorizedOmega = nerdamer(`[matget(omega_${i-1}, 0, 0), matget(omega_${i-1}, 1, 0), matget(omega_${i-1}, 2, 0)]`).text();
+        nerdamer.setVar(`v_${i}`, `(R${i}${i-1})*(v_${i-1}+(cross(${vectorizedOmega}, ${translationVectors[i-1]})))`);
+      }
+      else if (robotType[i-1] === 'P') {
+        nerdamer.setVar(`omega_${i}`, `(R${i}${i-1}*omega_${i-1})`);
+        const vectorizedOmega = nerdamer(`[matget(omega_${i-1}, 0, 0), matget(omega_${i-1}, 1, 0), matget(omega_${i-1}, 2, 0)]`).text();
+        nerdamer.setVar(`v_${i}`, `(R${i}${i-1})*(v_${i-1}+(cross(${vectorizedOmega}, ${translationVectors[i-1]})))+(matrix([0],[0],[d_${i}]))`);
+      }
+      else if (robotType[i-1] === 'E') {
+        nerdamer.setVar(`omega_${i}`, `(R${i}${i-1}*omega_${i-1})`);
+        const vectorizedOmega = nerdamer(`[matget(omega_${i-1}, 0, 0), matget(omega_${i-1}, 1, 0), matget(omega_${i-1}, 2, 0)]`).text();
+        nerdamer.setVar(`v_${i}`, `(R${i}${i-1})*(v_${i-1}+(cross(${vectorizedOmega}, ${translationVectors[i-1]})))`); 
+      }
+    }
+
+    console.log('got past first for');
+
+    // These should now be the final (End effector) values
+    const v_final = nerdamer.getVars('text')[`v_${robotType.length}`];
+    const omega_final = nerdamer.getVars('text')[`omega_${robotType.length}`];
+
+    // The jacobian has n columns where n is the number of joints
+    // and m rows where m is the degrees of freedom there are
+
+    console.log('finals');
+
+    const jacobian = [...Array(6).keys()].map(_ => [...Array(robotType.length - 1).keys()].map(_ => '0'));
+
+    console.log('got jacobian');
+
+    for (var i = 0; i < jacobian.length; i++) {
+      console.log('i is', i);
+      for (var j = 0; j < jacobian[i].length; j++) {
+        console.log('j is', j);
+        const x = nerdamer(`expand(matget(${i < 3 ? v_final : omega_final}, ${i % 3}, 0))`)
+          .text()
+          .split('+')
+          .filter(x => x.includes(`theta_dot_${j+1}`))
+          .map(x => x.replace(`theta_dot_${j+1}`, '1'))
+          .join('+');
+        if (x != '') jacobian[i][j] = x;
+      }
+    }
+
+    const completeJacobian = nerdamer(`matrix(${jacobian.map(jRow => `[${jRow.map(j => j).join(', ')}]`).join(', ')})`);
+    // The transposed ones here might be wrong
+    const doubledRotationMatrices = this.linkParametersArray.map(l => l.getSymbolicDoubledRotationMatrix());
+    const downToZeroRotMat = nerdamer(doubledRotationMatrices.slice(0, robotType.length).map(r => `(${r.text('fractions')})`).join('*'));
+    const convertedJacobian = nerdamer(`${downToZeroRotMat.text('fractions')}*${completeJacobian.text('fractions')}`);
+
+    const compiledCode = compile(convertedJacobian.text('fractions').replace('matrix(', 'matrix([').slice(0, -1).concat('])'));
     
+    // There is a possibility that there is an error here, because the results don't match the original handmade method
+    // if theta_2 is not 0, but there is not theta_2-specific code here, so it shouldn't be broken for it
+    return compiledCode;
+
+  }
+
+  evaluateCompiledJacobian(compiledCode: math.EvalFunction | undefined) {
+    if (compiledCode == undefined) {
+      return null;
+    }
+    const scope = {
+      a_0: this.linkParametersArray[0].a_i_minus_1,
+      alpha_0: this.linkParametersArray[0].alpha_i_minus_1,
+      d_1: this.linkParametersArray[0].d_i,
+      theta_1: this.linkParametersArray[0].theta_i,
+      a_1: this.linkParametersArray[1].a_i_minus_1,
+      alpha_1: this.linkParametersArray[1].alpha_i_minus_1,
+      d_2: this.linkParametersArray[1].d_i,
+      theta_2: this.linkParametersArray[1].theta_i,
+      a_2: this.linkParametersArray[2].a_i_minus_1,
+      alpha_2: this.linkParametersArray[2].alpha_i_minus_1,
+      d_3: this.linkParametersArray[2].d_i,
+      theta_3: this.linkParametersArray[2].theta_i,
+      a_3: this.linkParametersArray[3].a_i_minus_1,
+      alpha_3: this.linkParametersArray[3].alpha_i_minus_1,
+      d_4: this.linkParametersArray[3].d_i,
+      theta_4: this.linkParametersArray[3].theta_i,
+      theta_dot_1: 1,
+      theta_dot_2: 1,
+      theta_dot_3: 1
+    }
+
+    console.log(compiledCode.evaluate(scope));
+    return compiledCode.evaluate(scope);
+  }
+
+  evaluateCompiledInverseJacobian(compiledCode: math.EvalFunction | undefined) {
+    const jacobian = this.evaluateCompiledJacobian(compiledCode);
+    return inv(jacobian);
   }
 
   getGeneralJacobian(joint_angles: number[], L: number[], code: math.EvalFunction) {
@@ -679,5 +745,27 @@ export default class TwoDRobot {
     return u1_next;
 
   }
+
+  // inverseKinematicsRRR(x: number, y: number, a: number) {
+  //   // This is the offset in the fwd kin
+  //   let y_corrected = y;
+  //   let ee_dist_x = this.linkLengths[3] * cos(a);
+  //   let ee_dist_y = this.linkLengths[3] * sin(a);
+  //   let xT = x - ee_dist_x;
+  //   let yT = y_corrected - ee_dist_y;
+
+  //   let c_theta_2 = (Math.pow(xT, 2) + Math.pow(yT, 2) - Math.pow(this.linkLengths[1], 2) - Math.pow(this.linkLengths[2], 2)) / (2 * this.linkLengths[1] * this.linkLengths[2]);
+  //   let s_theta_2 = Math.sqrt(1-Math.pow(c_theta_2, 2));
+
+  //   let t_2 = atan2(s_theta_2, c_theta_2);
+    
+  //   let k_1 = this.linkLengths[1] + this.linkLengths[2]*c_theta_2;
+  //   let k_2 = this.linkLengths[2]*s_theta_2;
+
+  //   let t_1 = atan2(yT, xT) - atan2(k_2, k_1);
+  //   let t_3 = a - t_1 - t_2;
+    
+  //   return [t_1, t_2, t_3];
+  // }
 
 }

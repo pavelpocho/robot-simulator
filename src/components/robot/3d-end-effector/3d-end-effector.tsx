@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import React, { useEffect, useRef, useState } from 'react'
-import { ThreeElements, useFrame } from '@react-three/fiber';
+import { useEffect, useRef, useState } from 'react'
+import { useFrame } from '@react-three/fiber';
 
-const ThreeDJoint = (props: { position?: any, transformMatrix: math.Matrix | null | undefined } ) => {
+const ThreeDEndEffector = (props: { position?: any, transformMatrix: math.Matrix | null | undefined } ) => {
   const mesh = useRef<THREE.Mesh>(null!);
   const cyl = useRef<THREE.CylinderGeometry>(null!);
   const [hovered, setHover] = useState(false);
@@ -39,9 +39,9 @@ const ThreeDJoint = (props: { position?: any, transformMatrix: math.Matrix | nul
       onPointerOut={(event) => setHover(false)}>
       <cylinderGeometry ref={cyl} args={[0.5, 0.5, 1, 10]}>
       </cylinderGeometry>
-      <meshStandardMaterial color={hovered ? 'hotpink' : 'blue'} />
+      <meshStandardMaterial color={hovered ? 'hotpink' : 'green'} />
     </mesh>
   )
 }
 
-export default ThreeDJoint;
+export default ThreeDEndEffector;

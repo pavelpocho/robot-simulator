@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useInputTypeContext } from "../../../utils/inputTypeContext";
+import { useInputTypeContext } from "../../../utils/contexts/InputTypeContext";
 import { Input } from "../input";
 import { InputType } from "../input-type";
 

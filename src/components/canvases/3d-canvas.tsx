@@ -1,27 +1,28 @@
 import { Canvas } from "@react-three/fiber";
-import React from "react";
-import TwoDRobot from "../../robotics/dh-translator";
 import OControls from "../../utils/3d/orbit-controls";
+import { useNumbericTMsFrom0ToN } from "../../utils/hooks/robotHooks";
 import ThreeDBase from "../robot/3d-base/3d-base";
+import ThreeDEndEffector from "../robot/3d-end-effector/3d-end-effector";
 import ThreeDJoint from "../robot/3d-joint/3d-joint";
 
-interface Props {
-  robot: TwoDRobot | null
-}
 
-const ThreeDCanvas = ({ robot }: Props) => {
-  const tm = robot?.forwardKinematics(0);
-  const tm2 = robot?.forwardKinematics(1);
-  const tm3 = robot?.forwardKinematics(2);
+const ThreeDCanvas = () => {
+
+  const transformMatrices = useNumbericTMsFrom0ToN();
+
   return (
     <Canvas>
       {/* <ambientLight /> */}
       <pointLight position={[7, 5, 5]} />
       <pointLight position={[-7, -5, -5]} />
       <ThreeDBase />
-      <ThreeDJoint transformMatrix={tm} />
-      <ThreeDJoint transformMatrix={tm2} />
-      <ThreeDJoint transformMatrix={tm3} />
+      { transformMatrices.map((tm, i) => (
+        i === transformMatrices.length - 1 ? (
+          <ThreeDEndEffector key={i} transformMatrix={tm} />
+        ) : (
+          <ThreeDJoint key={i} transformMatrix={tm} />
+        )
+      )) }
       <OControls />
     </Canvas>
   )

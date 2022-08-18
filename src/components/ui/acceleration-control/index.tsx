@@ -1,6 +1,7 @@
 import React from "react";
-import { useInputTypeContext } from "../../../utils/inputTypeContext";
-import { JointFriction } from "../../../utils/useKinematicInfo";
+import { useInputTypeContext } from "../../../utils/contexts/InputTypeContext";
+import { useRobotContext } from "../../../utils/contexts/RobotContext";
+import { JointFriction } from "../../../utils/hooks/useKinematicInfo";
 import { Input } from "../input";
 import { InputType } from "../input-type";
 

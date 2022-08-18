@@ -1,5 +1,4 @@
-import React, { useContext } from "react"
-import { Context } from "../../../utils/inputTypeContext";
+import { useInputTypeContext } from "../../../utils/contexts/InputTypeContext";
 
 export enum InputType {
   FwdKin = 0,
@@ -10,16 +9,11 @@ export enum InputType {
   Torques = 5
 }
 
-interface Props {
-
-}
-
-export const InputTypeUI: React.FC<Props> = ({}) => {
-  const c = useContext(Context);
+export const InputTypeUI = () => {
+  const c = useInputTypeContext();
   const names = [ "Forward kinematics", "Inverse kinematics", "Joint velocities", "Cartesian velocities", "Trajectory generation", "Dynamic simulation" ];
   const inputTypes = [ InputType.FwdKin, InputType.InvKin, InputType.JointVel, InputType.CartVel, InputType.Trajectory, InputType.Torques ];
   return <div>
-    <h3 className='section-title'>1. Choose input / simulation type</h3>
     <div style={{
       overflowX: 'auto',
       width: '100%',

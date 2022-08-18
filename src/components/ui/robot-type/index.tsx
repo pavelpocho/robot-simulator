@@ -1,38 +1,26 @@
-import React, { useState } from "react";
-import { useInputTypeContext } from "../../../utils/inputTypeContext";
-import { RobotLinkLengths } from "../../../utils/useKinematicInfo";
-import { Input } from "../input";
-import { InputType } from "../input-type";
+import React from "react";
+import { useRobotContext } from "../../../utils/contexts/RobotContext";
 
-type n = React.Dispatch<React.SetStateAction<number>>;
-type ns = React.Dispatch<React.SetStateAction<number[]>>;
-type b = React.Dispatch<React.SetStateAction<boolean>>;
-
-interface Props {
-  robotType: string, setRobotType: React.Dispatch<React.SetStateAction<string>>,
-  linkLengths: RobotLinkLengths, setLinkLengths: React.Dispatch<React.SetStateAction<RobotLinkLengths>>
-  applyLinkLengthChange: boolean, setApplyLinkLengthChange: b
-  applyRobotTypeChange: boolean, setApplyRobotTypeChange: b
-}
-
-export const RobotTypeUI: React.FC<Props> = ({
-  robotType, setRobotType, linkLengths, setLinkLengths, setApplyLinkLengthChange, setApplyRobotTypeChange
-}) => {
-  const c = useInputTypeContext();
-  const [ counter, setCounter ] = useState(0);
+export const RobotTypeUI: React.FC = () => {
+  const { robot, setRobot } = useRobotContext();
   return <>
     <div>
       <div>
-        <input disabled={false} title="Robot type" value={robotType} type="text" onChange={(e) => {setRobotType(e.currentTarget.value); setApplyRobotTypeChange(true)}} />
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'nowrap', overflowX: 'auto' }}>
-      { linkLengths.values.map((l, i) => {
-        if (i == 0) return null;
-        return <Input key={i} label={`Link ${i}`} value={l} disabled={false} setValue={(v: number) => {
-          setLinkLengths(ls => { ls.values[i] = v; return ls });
-          setApplyLinkLengthChange(true);
+        <input disabled={false} title="Robot type" value={robot?.type} type="text" onChange={(e) => {
+          const typeDiff = e.currentTarget.value.length - robot.type.length;
+          const v = e.currentTarget.value;
+          setRobot(r => {
+            if (typeDiff > 0) {
+              const newDhRows = [...Array(typeDiff).keys()].map(i => ({
+                i: i + 1 + r.dhTable.length, a_i_minus_1: 0, alpha_i_minus_1: 0, d_i: 0, theta_i: 0 
+              }));
+              return { ...r, type: v, dhTable: r.dhTable.concat(newDhRows).map(d => ({ ...d })) }
+            }
+            else {
+              return { ...r, type: v, dhTable: r.dhTable.slice(0, typeDiff).map(d => ({ ...d })) }
+            }
+          });
         }} />
-      }) }
       </div>
     </div>
   </>
