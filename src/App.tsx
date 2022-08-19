@@ -2,7 +2,7 @@ import './App.css'
 import { Robot, RobotContext } from './utils/contexts/RobotContext'
 import { InputType } from './components/ui/input-type'
 import Wrapper from './wrapper'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { InputTypeContext } from './utils/contexts/InputTypeContext'
 
 const App = () => {
@@ -21,19 +21,6 @@ const App = () => {
     jointVelocities: [0, 0, 0],
     cartesianEEVelocities: [0, 0, 0, 0, 0, 0]
   });
-
-  useEffect(() => {
-    const dhTable = robot.dhTable.map(d => d);
-    robot.jointPositions.forEach((jp, i) => {
-      if (robot.type[i] === 'R') {
-        dhTable[i].theta_i = jp;
-      }
-      else if (robot.type[i] === 'P') {
-        dhTable[i].d_i = jp;
-      }
-    });
-    setRobot(r => ({ ...r, dhTable }));
-  }, [ robot.jointPositions, robot.type ]);
 
   return <InputTypeContext.Provider value={{ inputType, setInputType }}>
     <RobotContext.Provider value={{ robot, setRobot }}>

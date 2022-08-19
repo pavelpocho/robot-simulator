@@ -1,8 +1,7 @@
 import { cos, sin } from "mathjs"
 import React from "react"
 import { Rect } from "react-konva"
-import { ScreenSize } from "../../../App"
-import { screenOffsetX, screenOffsetY } from "../../../utils/constants"
+import { ScreenSize } from "../../../wrapper"
 
 interface Props {
   x: number,

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { TrajectoryInputType } from "../../../utils/useKinematicInfo";
+import { TrajectoryInputType } from "../../../utils/hooks/useKinematicInfo";
 import { Input } from "../input";
 
 type n = React.Dispatch<React.SetStateAction<number[]>>;

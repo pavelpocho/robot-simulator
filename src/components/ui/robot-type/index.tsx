@@ -10,14 +10,27 @@ export const RobotTypeUI: React.FC = () => {
           const typeDiff = e.currentTarget.value.length - robot.type.length;
           const v = e.currentTarget.value;
           setRobot(r => {
-            if (typeDiff > 0) {
+            if (typeDiff >= 0) {
               const newDhRows = [...Array(typeDiff).keys()].map(i => ({
                 i: i + 1 + r.dhTable.length, a_i_minus_1: 0, alpha_i_minus_1: 0, d_i: 0, theta_i: 0 
               }));
-              return { ...r, type: v, dhTable: r.dhTable.concat(newDhRows).map(d => ({ ...d })) }
+              const newPositionsAndVelocities = Array(typeDiff).fill(0);
+              return {
+                ...r, 
+                type: v, 
+                dhTable: r.dhTable.concat(newDhRows).map(d => ({ ...d })),
+                jointPositions: r.jointPositions.concat(newPositionsAndVelocities),
+                jointVelocities: r.jointVelocities.concat(newPositionsAndVelocities)
+              }
             }
             else {
-              return { ...r, type: v, dhTable: r.dhTable.slice(0, typeDiff).map(d => ({ ...d })) }
+              return {
+                ...r,
+                type: v,
+                dhTable: r.dhTable.slice(0, typeDiff).map(d => ({ ...d })),
+                jointPositions: r.jointPositions.slice(0, typeDiff),
+                jointVelocities: r.jointVelocities.slice(0, typeDiff)
+              }
             }
           });
         }} />

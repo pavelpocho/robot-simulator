@@ -1,7 +1,6 @@
 import React from "react"
 import { Circle } from "react-konva"
-import { ScreenSize } from "../../../App"
-import { screenOffsetX, screenOffsetY } from "../../../utils/constants"
+import { ScreenSize } from "../../../wrapper"
 
 interface Props {
   x: number,
