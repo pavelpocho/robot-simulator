@@ -65,8 +65,10 @@ const App = () => {
   const [ invertedJac, setInvertedJac ] = useState<Matrix | null>(null);
   const [ jacobianSection2DArray, setJacobianSection2DArray ] = useState<(string[])[]>([]);
   const [ keyControlRegistrations, setKeyControlRegistrations ] = useState<KeyControlRegistration[]>([]);
-  const statorRotor = useLoader(GLTFLoader, 'src/components/robot/3d-joint/stator_rotor_v4.glb');
-  const stator = useLoader(GLTFLoader, 'src/components/robot/3d-joint/stator_v3.glb');
+  // const statorRotor = useLoader(GLTFLoader, 'src/components/robot/3d-joint/stator_rotor_v4.glb');
+  // const stator = useLoader(GLTFLoader, 'src/components/robot/3d-joint/stator_v3.glb');
+  const statorRotor = useLoader(GLTFLoader, 'stator_rotor_v4.glb');
+  const stator = useLoader(GLTFLoader, 'stator_v3.glb');
 
   useEffect(() => {
     window.onkeydown = (e) => {
