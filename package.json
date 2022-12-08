@@ -1,6 +1,7 @@
 {
   "name": "robot-simulator",
   "private": true,
+  "homepage": "/robot-simulator/",
   "version": "0.0.0",
   "scripts": {
     "dev": "vite",
