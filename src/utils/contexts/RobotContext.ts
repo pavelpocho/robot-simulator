@@ -1,4 +1,5 @@
 import React, { useContext } from 'react';
+import { AR } from '../../wrapper';
 
 export type Robot = {
   type: string,
@@ -9,6 +10,9 @@ export type Robot = {
   // Length of this must be determined by robot.type:
   jointVelocities: number[],
   cartesianEEVelocities: number[],
+  fkUpdate: boolean,
+  ikUpdate: boolean,
+  angleRepresentation: AR
 }
 
 export type LinkParameter = {

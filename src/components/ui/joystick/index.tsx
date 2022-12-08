@@ -41,7 +41,7 @@ export const JoystickUI: React.FC<Props> = ({
     setApplyCartesianVelocities(true);
   }, [mouseCoords]);
 
-  return c.inputType >= 3 ? <div style={{
+  return c.inputType ?? 0 >= 3 ? <div style={{
     borderRadius: '100%',
     backgroundColor: 'gray',
     height: '100px',

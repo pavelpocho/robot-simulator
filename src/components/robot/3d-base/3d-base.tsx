@@ -15,7 +15,7 @@ const ThreeDBase = (props: ThreeElements['mesh']) => {
       onClick={(event) => setActive(active)}
       onPointerOver={(event) => setHover(true)}
       onPointerOut={(event) => setHover(false)}>
-      <boxGeometry args={[1, 1, 1]} />
+      <boxGeometry args={[0.4, 0.4, 0.4]} />
       <meshStandardMaterial color={hovered ? 'hotpink' : 'orange'} />
     </mesh>
   )

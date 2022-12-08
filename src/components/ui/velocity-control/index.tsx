@@ -17,7 +17,7 @@ export const VelocityControlUI = () => {
   ];
 
   return <>
-    { c.inputType >= 2 && <div style={{ display: 'flex' }}>
+    { (c?.inputType ?? 0) >= 2 && <div style={{ display: 'flex' }}>
       { robot?.jointVelocities.map((jvx, i) => (
         <Input 
           key={i}
@@ -31,7 +31,7 @@ export const VelocityControlUI = () => {
         />
       )) }
     </div> }
-    { c.inputType >= 2 && <div style={{ display: 'flex' }}>
+    { (c?.inputType ?? 0) >= 2 && <div style={{ display: 'flex' }}>
       { robot.cartesianEEVelocities.map((cvx, i) => (
         <Input 
           key={i}

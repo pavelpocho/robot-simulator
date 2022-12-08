@@ -9,7 +9,10 @@ onmessage = (ev: MessageEvent<JacSectionMessage>) => {
   splitRow.forEach((bit) => {
     for (let j = 0; j < jacobianSection.length; j++) {
       if (bit.includes(`td${j+1}`)) {
-        separatedStrings[j] += (separatedStrings[j] === '' ? '' : '+') + bit.replace(`td${j+1}`, `1`);
+        separatedStrings[j] += ((separatedStrings[j] === '' ? '' : '+') + bit.replace(`td${j+1}`, `1`)).replace(/\*1(?![0-9])/g, '').replace(/\(-1\)\*/g, '-');
+      }
+      if (bit.includes(`dd${j+1}`)) {
+        separatedStrings[j] += ((separatedStrings[j] === '' ? '' : '+') + bit.replace(`dd${j+1}`, `1`)).replace(/\*1(?![0-9])/g, '').replace(/\(-1\)\*/g, '-');
       }
     }
   });

@@ -1,22 +1,45 @@
-import { MathComponent } from "mathjax-react";
-import { useInputTypeContext } from "../../../utils/contexts/InputTypeContext"
-import { useMathJaxTMCombined, useMathJaxTMSolved, useMathJaxTMSubstituted } from "../../../utils/hooks/robotHooks";
-import { InputType } from "../input-type";
+import { Accordion } from "@mantine/core";
+import { useState } from "react";
+import { useRobotContext } from "../../../utils/contexts/RobotContext";
+import { FKAngleExplanation } from "./forward-kinematics/angle-explanation";
+import { FKDescription } from "./forward-kinematics/description";
+import { FKDetailExplanation } from "./forward-kinematics/detail-explanation";
+import { FKSummaryTable } from "./forward-kinematics/summary-table";
 
 export const ForwardKinematicsSimulationDetails = () => {
-  
-  const { inputType } = useInputTypeContext();
 
-  const substitutedMatrices = useMathJaxTMSubstituted();
-  const solvedMatrices = useMathJaxTMSolved();
+  const { robot } = useRobotContext();
+  const ar = robot.angleRepresentation;
 
-  const combinedMatrices = useMathJaxTMCombined();
+  const [value, setValue] = useState<string[]>([ 'summary-table' ]);
 
-  return inputType === InputType.FwdKin ? (<>
-    <MathComponent tex={String.raw`{_i^{i-1}}T=\left[ \begin{array}{ccc}c\theta_i & -s\theta_i & 0 & a_{i-1} \\ s\theta_ic\alpha_{i-1} & c\theta_ic\alpha_{i-1} & -s\alpha_{i-1} & -s\alpha_{i-1}d_i \\ s\theta_is\alpha_{i-1} & c\theta_is\alpha_{i-1} & c\alpha_{i-1} & c\alpha_{i-1}d_i \\ 0 & 0 & 0 & 1\end{array} \right]`} />
-    { substitutedMatrices }
-    { solvedMatrices }
-    { combinedMatrices }
-  </>) : <></>
+  return <div>
+    <Accordion variant='separated' multiple value={value} onChange={setValue}>
+      <Accordion.Item value='summary-table'>
+        <Accordion.Control>Calculated Cartesian positions</Accordion.Control>
+        <Accordion.Panel>
+          <FKSummaryTable />
+        </Accordion.Panel>
+      </Accordion.Item>
+      <Accordion.Item value='description'>
+        <Accordion.Control>What is Forward kinematics?</Accordion.Control>
+        <Accordion.Panel>
+          <FKDescription />
+        </Accordion.Panel>
+      </Accordion.Item>
+      <Accordion.Item value='detail-explanation'>
+        <Accordion.Control>What does this simulation show?</Accordion.Control>
+        <Accordion.Panel>
+          <FKDetailExplanation />
+        </Accordion.Panel>
+      </Accordion.Item>
+      <Accordion.Item value='angle-explanation'>
+        <Accordion.Control>Angle representation</Accordion.Control>
+        <Accordion.Panel>
+          <FKAngleExplanation />
+        </Accordion.Panel>
+      </Accordion.Item>
+    </Accordion>
+  </div>
 
 }

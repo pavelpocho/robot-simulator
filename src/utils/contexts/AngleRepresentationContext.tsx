@@ -1,5 +1,5 @@
 import React, { useContext } from 'react';
-import { AR } from '../../components/ui/position-control';
+import { AR } from '../../wrapper';
 
 export interface ContextType {
   angleRepresentation: AR,
